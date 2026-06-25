@@ -1,0 +1,14 @@
+<launch>
+  <node pkg="rosserial_python" type="serial_node.py" name="serial_node" output="screen">
+    <param name="port" value="/dev/stm32"/>
+    <param name="baud" value="115200"/>
+  </node>
+
+  <node pkg="magni_nav" type="odom_publisher.py" name="odom_publisher" output="screen" />
+
+  <include file="$(find rplidar_ros)/launch/rplidar_a3.launch" />
+
+  <node pkg="tf" type="static_transform_publisher" name="base_to_laser" args="0.0 0.0 0.90 0.0 0.0 0.0 base_footprint laser 100" />
+  
+  <node pkg="tf" type="static_transform_publisher" name="laser_to_base_laser_link" args="0.0 0.0 0.0 0.0 0.0 0.0 laser base_laser_link 100" />
+</launch>
