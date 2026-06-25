@@ -1,1 +1,10 @@
 *.bag
+
+# Catkin build outputs
+jetson/catkin_ws/build/
+jetson/catkin_ws/devel/
+jetson/catkin_ws/install/
+
+# Runtime/log artifacts
+*.log
+.catkin_tools/
