@@ -33,6 +33,18 @@ Run autonomous driving:
 autodrive
 ```
 
+Send a named navigation goal from another Jetson SSH terminal:
+
+```bash
+rosrun magni_nav navi.py 544호
+```
+
+Run RViz from the Ubuntu laptop terminal:
+
+```bash
+rviz
+```
+
 Equivalent manual command:
 
 ```bash

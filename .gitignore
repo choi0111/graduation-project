@@ -7,4 +7,5 @@ jetson/catkin_ws/install/
 
 # Runtime/log artifacts
 *.log
+__pycache__/
 .catkin_tools/

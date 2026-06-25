@@ -24,4 +24,10 @@ Run:
 autodrive
 ```
 
+Send a destination from another Jetson SSH terminal:
+
+```bash
+rosrun magni_nav navi.py 544호
+```
+
 See [docs/jetson-workspace.md](docs/jetson-workspace.md) for the manual commands.

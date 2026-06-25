@@ -6,6 +6,7 @@ import actionlib
 import sys
 import math
 import tf
+from actionlib_msgs.msg import GoalStatus
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from geometry_msgs.msg import Twist
 
@@ -104,7 +105,7 @@ def move_to_goal(client, location_name):
     client.wait_for_result()
     
     state = client.get_state()
-    if state == actionlib.GoalStatus.SUCCEEDED:
+    if state == GoalStatus.SUCCEEDED:
         print("✅ [{}] 도착 완료!".format(location_name))
         return True
     else:
