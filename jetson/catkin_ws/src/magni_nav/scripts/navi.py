@@ -82,7 +82,7 @@ def move_to_goal(client, location_name):
     # 현재 내 로봇 위치에서 목표점까지의 '직선 각도'를 실시간 계산하여 우회전 발작을 원천 차단합니다.
     if "_중앙" in location_name:
         try:
-            (trans, rot) = tf_listener.lookupTransform('/map', '/base_link', rospy.Time(0))
+            (trans, rot) = tf_listener.lookupTransform('/map', '/base_footprint', rospy.Time(0))
             curr_x, curr_y = trans[0], trans[1]
             yaw = math.atan2(y - curr_y, x - curr_x)
             q = tf.transformations.quaternion_from_euler(0, 0, yaw)

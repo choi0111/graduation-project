@@ -1,22 +1,22 @@
 DWAPlannerROS:
-  # 속도를 조금 더 올려서 마찰력을 힘으로 이겨내게 합니다.
-  max_vel_x: 0.25        
-  min_vel_x: 0.10        # 0.03은 너무 낮아 출발을 못 할 수 있습니다. 0.05로 올립니다.
-  
+  # Match the STM32 firmware limits so DWA predicts the robot's real motion.
+  max_vel_x: 0.10
+  min_vel_x: 0.03
+
   max_vel_y: 0.0
   min_vel_y: 0.0
 
-  max_vel_trans: 0.25
-  min_vel_trans: 0.10
+  max_vel_trans: 0.10
+  min_vel_trans: 0.03
   trans_stopped_vel: 0.01
 
-  max_vel_theta: 0.30    # 회전 속도를 조금 높여 궤적 수정 능력을 키웁니다.
-  min_vel_theta: 0.05    # 회전 시에도 마찰력을 이기도록 최소 회전 속도 부여
-  theta_stopped_vel: 0.05
-  
-  # 가속도를 살짝 높여서 출발 순간의 답답함을 없앱니다.
-  acc_lim_x: 0.25        
-  acc_lim_theta: 0.5
+  max_vel_theta: 0.20
+  min_vel_theta: 0.02
+  theta_stopped_vel: 0.02
+
+  # Keep acceleration conservative because the STM ramps PWM by one step per cycle.
+  acc_lim_x: 0.08
+  acc_lim_theta: 0.25
   acc_lim_y: 0.0
 
   yaw_goal_tolerance: 0.20

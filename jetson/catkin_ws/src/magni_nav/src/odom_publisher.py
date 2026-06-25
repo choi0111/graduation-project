@@ -12,8 +12,8 @@ class OdomPublisher:
         rospy.init_node('odom_publisher')
         
         # STM32와 맞춘 틱 수치
-        self.left_ticks_per_rev = 3788.0 
-        self.right_ticks_per_rev = 3788.0
+        self.left_ticks_per_rev = 3788.0
+        self.right_ticks_per_rev = 3691.0
         
         self.wheel_radius = 0.125 / 2.0
         self.wheel_base = 0.695
