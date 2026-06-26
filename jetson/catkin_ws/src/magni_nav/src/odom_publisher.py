@@ -22,6 +22,7 @@ class OdomPublisher:
         self.right_ticks = 0
         self.last_left_ticks = 0
         self.last_right_ticks = 0
+        self.have_ticks = False
 
         self.x = 0.0
         self.y = 0.0
@@ -42,12 +43,22 @@ class OdomPublisher:
         # x에 담긴 왼쪽 틱, y에 담긴 오른쪽 틱을 꺼내옵니다.
         self.left_ticks = int(msg.x)
         self.right_ticks = int(msg.y)
+        if not self.have_ticks:
+            self.last_left_ticks = self.left_ticks
+            self.last_right_ticks = self.right_ticks
+            self.last_time = rospy.Time.now()
+            self.have_ticks = True
+            rospy.loginfo("odom_publisher baseline ticks: left=%d right=%d",
+                          self.left_ticks,
+                          self.right_ticks)
 
     def update(self):
         current_time = rospy.Time.now()
+        if not self.have_ticks:
+            self.last_time = current_time
+            return
+
         if self.first_run:
-            self.last_left_ticks = self.left_ticks
-            self.last_right_ticks = self.right_ticks
             self.last_time = current_time
             self.first_run = False
             return
@@ -80,6 +91,7 @@ class OdomPublisher:
         self.x += delta_x
         self.y += delta_y
         self.th += delta_th
+        self.th = math.atan2(math.sin(self.th), math.cos(self.th))
 
         vx = distance / dt
         vth = d_th / dt

@@ -4,7 +4,6 @@
 import rospy
 import actionlib
 import sys
-import math
 import tf
 from actionlib_msgs.msg import GoalStatus
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
@@ -46,6 +45,14 @@ locations = {
 cmd_vel_pub = None
 tf_listener = None
 
+def get_current_yaw():
+    global tf_listener
+    try:
+        (trans, rot) = tf_listener.lookupTransform('/map', '/base_footprint', rospy.Time(0))
+        return tf.transformations.euler_from_quaternion(rot)[2]
+    except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
+        return None
+
 # =========================================================
 # 2. [안전 탈출 및 후진 로직]
 # =========================================================
@@ -79,18 +86,13 @@ def move_to_goal(client, location_name):
         
     x, y, z_ori, w_ori = locations[location_name]
 
-    # 복도 중앙으로 향할 때는 딕셔너리의 회전 각도를 무시하고, 
-    # 현재 내 로봇 위치에서 목표점까지의 '직선 각도'를 실시간 계산하여 우회전 발작을 원천 차단합니다.
-    if "_중앙" in location_name:
-        try:
-            (trans, rot) = tf_listener.lookupTransform('/map', '/base_footprint', rospy.Time(0))
-            curr_x, curr_y = trans[0], trans[1]
-            yaw = math.atan2(y - curr_y, x - curr_x)
-            q = tf.transformations.quaternion_from_euler(0, 0, yaw)
-            z_ori = q[2]
-            w_ori = q[3]
-        except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
-            pass
+    # 목적지 좌표까지의 이동이 목표이므로 goal yaw는 현재 로봇 yaw를 유지한다.
+    # 이렇게 하면 문 앞 최종 자세를 맞추려고 시작부터 제자리 회전하는 동작을 줄일 수 있다.
+    current_yaw = get_current_yaw()
+    if current_yaw is not None:
+        q = tf.transformations.quaternion_from_euler(0, 0, current_yaw)
+        z_ori = q[2]
+        w_ori = q[3]
 
     goal = MoveBaseGoal()
     goal.target_pose.header.frame_id = "map"
@@ -140,7 +142,9 @@ def main():
             # 단계 1: 목적지 호수의 '중앙' 경유지가 데이터베이스에 있다면 먼저 직진 주행
             center_target = target + "_중앙"
             if center_target in locations:
-                move_to_goal(client, center_target)
+                if not move_to_goal(client, center_target):
+                    print("⚠️ [{}] 중앙 경유 실패. 최종 목적지 진입을 생략합니다.".format(target))
+                    continue
                 rospy.sleep(1.0)
             
             # 단계 2: 중앙 도착 후, 실제 최종 문 앞 목적지로 진입
