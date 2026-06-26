@@ -97,11 +97,11 @@ UART_HandleTypeDef huart2;
  */
 #define REV_RIGHT_FAST_LIMIT         14
 
-#define PID_KP                 3.0f
+#define PID_KP                 60.0f
 #define PID_KI                 0.0f
 #define PID_KD                 0.0f
 
-#define PID_CORRECTION_LIMIT   1
+#define PID_CORRECTION_LIMIT   4
 #define PID_INTEGRAL_LIMIT     3.0f
 
 #define LEFT_ENCODER_SIGN      1
@@ -506,30 +506,7 @@ static void apply_open_loop_limited_pid_outputs(void)
    * 오른쪽은 직진 기준 PWM까지만 유지하고,
    * 왼쪽은 trim을 적용해 낮춘다.
    */
-  if ((cmd_linear_x > 0.002f) && (cmd_angular_z > 0.002f))
-  {
-    int straight_right_pwm = speed_to_signed_pwm(cmd_linear_x);
-
-    if (straight_right_pwm < 0)
-    {
-      straight_right_pwm = 0;
-    }
-
-    if (desired_right_pwm > straight_right_pwm)
-    {
-      desired_right_pwm = straight_right_pwm;
-    }
-
-    if (desired_left_pwm > 0)
-    {
-      desired_left_pwm = (int)((float)desired_left_pwm * FWD_LEFT_TURN_LEFT_TRIM);
-
-      if (desired_left_pwm > 0 && desired_left_pwm < FWD_LEFT_TURN_LEFT_MIN_PWM)
-      {
-        desired_left_pwm = FWD_LEFT_TURN_LEFT_MIN_PWM;
-      }
-    }
-  }
+  /* Keep cmd_vel -> wheel PWM symmetric for DWA odometry consistency. */
 
   /*
    * 후진 중 오른쪽 모터가 더 빨라지는 상황 보정
@@ -542,24 +519,7 @@ static void apply_open_loop_limited_pid_outputs(void)
    * - 왼쪽, 오른쪽 모두 후진
    * - 오른쪽의 절댓값 PWM이 왼쪽보다 큼
    */
-  if ((desired_left_pwm < 0) && (desired_right_pwm < 0))
-  {
-    int left_abs = abs_int(desired_left_pwm);
-    int right_abs = abs_int(desired_right_pwm);
-
-    if (right_abs > left_abs)
-    {
-      if (right_abs > REV_RIGHT_FAST_LIMIT)
-      {
-        desired_right_pwm = -REV_RIGHT_FAST_LIMIT;
-      }
-
-      if (left_abs > 0 && left_abs < LEFT_BWD_MIN_PWM)
-      {
-        desired_left_pwm = -LEFT_BWD_MIN_PWM;
-      }
-    }
-  }
+  /* Do not add direction-specific clamps here. */
 
   if (desired_left_pwm > 0)
   {

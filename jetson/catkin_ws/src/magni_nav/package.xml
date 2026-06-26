@@ -23,6 +23,7 @@
   <exec_depend>rospy</exec_depend>
   <exec_depend>rosserial_python</exec_depend>
   <exec_depend>rplidar_ros</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
   <exec_depend>tf</exec_depend>
 
   <!-- We implicitly depend on raspicam_node too -->

@@ -14,4 +14,4 @@ cd "${CATKIN_WS}"
 catkin_make
 source "${CATKIN_WS}/devel/setup.bash"
 
-exec roslaunch magni_nav jetson_autodrive.launch
+exec roslaunch magni_nav jetson_autodrive.launch "$@"
