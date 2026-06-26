@@ -24,12 +24,12 @@ DWAPlannerROS:
   xy_goal_tolerance: 0.35
   latch_xy_goal_tolerance: true
 
-  sim_time: 1.8
-  sim_granularity: 0.025
-  angular_sim_granularity: 0.05
-  vx_samples: 8
+  sim_time: 1.2
+  sim_granularity: 0.05
+  angular_sim_granularity: 0.10
+  vx_samples: 4
   vy_samples: 1
-  vtheta_samples: 8
+  vtheta_samples: 5
 
   # Follow the global plan strongly. The cost term only represents saved-map
   # walls, because the local costmap does not subscribe to /scan obstacles.
