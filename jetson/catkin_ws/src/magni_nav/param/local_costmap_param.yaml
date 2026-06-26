@@ -1,18 +1,28 @@
 local_costmap:
-  global_frame: odom
+  global_frame: map
   robot_base_frame: base_footprint
   update_frequency: 2.0
   publish_frequency: 1.0
   transform_tolerance: 0.3
 
-  # No obstacle avoidance: keep the local costmap as an empty rolling window.
-  # AMCL still uses /scan for localization, but move_base no longer uses /scan
-  # to stop, detour, or rotate around dynamic obstacles.
-  static_map: false
-  rolling_window: true
-  width: 3.0
-  height: 3.0
+  # Use the saved map walls for corridor clearance, but do not use /scan as a
+  # dynamic obstacle source. AMCL still uses /scan for localization.
+  static_map: true
+  rolling_window: false
   resolution: 0.10
   track_unknown_space: false
 
-  plugins: []
+  plugins:
+    - {name: static_layer, type: "costmap_2d::StaticLayer"}
+    - {name: inflation_layer, type: "costmap_2d::InflationLayer"}
+
+  static_layer:
+    enabled: true
+    map_topic: /map
+    subscribe_to_updates: false
+    track_unknown_space: false
+
+  inflation_layer:
+    enabled: true
+    inflation_radius: 0.25
+    cost_scaling_factor: 6.0

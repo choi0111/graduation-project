@@ -31,11 +31,11 @@ DWAPlannerROS:
   vy_samples: 1
   vtheta_samples: 8
 
-  # No obstacle avoidance: strongly follow the global plan and do not score
-  # local laser obstacles. The static map still creates the global route.
-  path_distance_bias: 48.0
-  goal_distance_bias: 8.0
-  occdist_scale: 0.0
+  # Follow the global plan strongly. The cost term only represents saved-map
+  # walls, because the local costmap does not subscribe to /scan obstacles.
+  path_distance_bias: 42.0
+  goal_distance_bias: 10.0
+  occdist_scale: 0.04
   forward_point_distance: 0.40
 
   stop_time_buffer: 0.3
