@@ -11,16 +11,16 @@ DWAPlannerROS:
   trans_stopped_vel: 0.01
 
   # Limit spin speed so a bad initial heading does not immediately swing into a wall.
-  max_vel_theta: 0.14
+  max_vel_theta: 0.08
   min_vel_theta: 0.02
   theta_stopped_vel: 0.02
 
   # Conservative acceleration for the PWM ramp in the STM32 firmware.
   acc_lim_x: 0.06
-  acc_lim_theta: 0.18
+  acc_lim_theta: 0.10
   acc_lim_y: 0.0
 
-  yaw_goal_tolerance: 0.25
+  yaw_goal_tolerance: 3.14
   xy_goal_tolerance: 0.35
   latch_xy_goal_tolerance: true
 
@@ -33,9 +33,9 @@ DWAPlannerROS:
 
   # Follow the global plan strongly. The cost term only represents saved-map
   # walls, because the local costmap does not subscribe to /scan obstacles.
-  path_distance_bias: 42.0
-  goal_distance_bias: 10.0
-  occdist_scale: 0.04
+  path_distance_bias: 48.0
+  goal_distance_bias: 8.0
+  occdist_scale: 0.08
   forward_point_distance: 0.40
 
   stop_time_buffer: 0.3

@@ -5,10 +5,9 @@ local_costmap:
   publish_frequency: 0.2
   transform_tolerance: 0.5
 
-  # Lightweight local costmap for Jetson Nano.
-  # The global planner still uses the saved map walls to create the corridor
-  # route. The local planner only follows that route and does not process /scan
-  # obstacles, which avoids stop-and-go CPU spikes.
+  # Dynamic obstacle avoidance is disabled: there is no /scan obstacle layer.
+  # The saved map is still used in a small rolling window so DWA keeps clearance
+  # from corridor walls without carrying the full static map as a local costmap.
   static_map: false
   rolling_window: true
   width: 2.0
@@ -16,4 +15,17 @@ local_costmap:
   resolution: 0.20
   track_unknown_space: false
 
-  plugins: []
+  plugins:
+    - {name: static_layer, type: "costmap_2d::StaticLayer"}
+    - {name: inflation_layer, type: "costmap_2d::InflationLayer"}
+
+  static_layer:
+    enabled: true
+    map_topic: /map
+    subscribe_to_updates: false
+    track_unknown_space: false
+
+  inflation_layer:
+    enabled: true
+    inflation_radius: 0.25
+    cost_scaling_factor: 6.0
