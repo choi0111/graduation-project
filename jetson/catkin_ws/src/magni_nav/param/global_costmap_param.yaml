@@ -1,24 +1,23 @@
 global_costmap:
   global_frame: map
   robot_base_frame: base_footprint
-  update_frequency: 0.2
-  publish_frequency: 0.2
-  
-  # 전역 지도는 고정된 지도(static)를 쓰고, 롤링 윈도우(로봇 따라다니기)는 끕니다.
+  update_frequency: 0.5
+  publish_frequency: 0.5
+  transform_tolerance: 0.3
+
   static_map: true
   rolling_window: false
-  
-  # 통신 지연으로 인한 뻗음 방지 (정확한 들여쓰기 적용)
-  transform_tolerance: 1.0
+  resolution: 0.10
 
   plugins:
-    - {name: static_layer,            type: "costmap_2d::StaticLayer"}
-    - {name: inflation_layer,         type: "costmap_2d::InflationLayer"}
+    - {name: static_layer, type: "costmap_2d::StaticLayer"}
+    - {name: inflation_layer, type: "costmap_2d::InflationLayer"}
+
+  static_layer:
+    enabled: true
+    map_topic: /map
 
   inflation_layer:
-    enabled:              true
-    cost_scaling_factor:  5.0
-    # 전역 지도에서도 안전 쿠션을 지역 지도와 동일하게 10cm로 줄여줍니다.
-    inflation_radius:     0.10
-
-  resolution: 0.10
+    enabled: true
+    inflation_radius: 0.25
+    cost_scaling_factor: 6.0

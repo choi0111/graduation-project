@@ -5,7 +5,14 @@
     <param name="base_frame_id" value="base_footprint" />
     <param name="odom_frame_id" value="odom" />
     <param name="global_frame_id" value="map" />
-    <param name="transform_tolerance" value="1.0" /> 
+    <param name="transform_tolerance" value="0.3" />
+    <param name="update_min_d" value="0.05" />
+    <param name="update_min_a" value="0.05" />
+    <param name="resample_interval" value="1" />
+    <param name="laser_model_type" value="likelihood_field" />
+    <param name="laser_max_beams" value="45" />
+    <param name="min_particles" value="500" />
+    <param name="max_particles" value="2000" />
   </node>
 
   <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">

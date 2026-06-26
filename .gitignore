@@ -4,6 +4,7 @@
 jetson/catkin_ws/build/
 jetson/catkin_ws/devel/
 jetson/catkin_ws/install/
+jetson/catkin_ws/.catkin_workspace
 
 # Runtime/log artifacts
 *.log

@@ -1,38 +1,46 @@
 DWAPlannerROS:
-  # Match the STM32 firmware limits so DWA predicts the robot's real motion.
+  # Keep planner limits close to the STM32 motor controller limits.
   max_vel_x: 0.10
-  min_vel_x: 0.03
+  min_vel_x: 0.02
 
   max_vel_y: 0.0
   min_vel_y: 0.0
 
   max_vel_trans: 0.10
-  min_vel_trans: 0.03
+  min_vel_trans: 0.02
   trans_stopped_vel: 0.01
 
-  max_vel_theta: 0.20
+  # Limit spin speed so a bad initial heading does not immediately swing into a wall.
+  max_vel_theta: 0.14
   min_vel_theta: 0.02
   theta_stopped_vel: 0.02
 
-  # Keep acceleration conservative because the STM ramps PWM by one step per cycle.
-  acc_lim_x: 0.08
-  acc_lim_theta: 0.25
+  # Conservative acceleration for the PWM ramp in the STM32 firmware.
+  acc_lim_x: 0.06
+  acc_lim_theta: 0.18
   acc_lim_y: 0.0
 
-  yaw_goal_tolerance: 0.20
-  xy_goal_tolerance: 0.30
+  yaw_goal_tolerance: 0.25
+  xy_goal_tolerance: 0.35
+  latch_xy_goal_tolerance: true
 
-  sim_time: 1.5
-  vx_samples: 5         # 10에서 15로 높여 경로 탐색을 더 정밀하게 함
+  sim_time: 1.8
+  sim_granularity: 0.025
+  angular_sim_granularity: 0.05
+  vx_samples: 8
   vy_samples: 1
-  vtheta_samples: 10     # 20에서 30으로 높임
+  vtheta_samples: 8
 
-  path_distance_bias: 16.0
-  goal_distance_bias: 24.0
-  occdist_scale: 0.03
-  forward_point_distance: 0.1
-  stop_time_buffer: 0.2
-  scaling_speed: 0.10
+  # Prefer following the global path over turning aggressively toward the final pose.
+  path_distance_bias: 32.0
+  goal_distance_bias: 12.0
+  occdist_scale: 0.08
+  forward_point_distance: 0.30
+
+  stop_time_buffer: 0.3
+  scaling_speed: 0.08
   max_scaling_factor: 0.2
-  oscillation_reset_dist: 0.05
+  oscillation_reset_dist: 0.10
+  prune_plan: true
+  meter_scoring: true
   holonomic_robot: false
