@@ -1,37 +1,18 @@
 <launch>
-  <arg name="base_frame" default="base_footprint" />
-  <arg name="odom_frame" default="odom" />
-  <arg name="laser_frame" default="laser" />
-  <arg name="base_laser_frame" default="base_laser_link" />
-  <arg name="laser_x" default="0.0" />
-  <arg name="laser_y" default="0.0" />
-  <arg name="laser_z" default="0.20" />
-  <arg name="laser_yaw" default="0.0" />
-
   <node pkg="rosserial_python" type="serial_node.py" name="serial_node" output="screen" respawn="true" respawn_delay="3">
     <param name="port" value="/dev/stm32"/>
     <param name="baud" value="115200"/>
   </node>
 
-  <node pkg="magni_nav" type="odom_publisher.py" name="odom_publisher" output="screen">
-    <param name="odom_frame" value="$(arg odom_frame)" />
-    <param name="base_frame" value="$(arg base_frame)" />
-    <param name="left_ticks_per_rev" value="3788.0" />
-    <param name="right_ticks_per_rev" value="3691.0" />
-    <param name="wheel_diameter" value="0.125" />
-    <param name="wheel_base" value="0.695" />
-    <param name="left_tick_sign" value="1.0" />
-    <param name="right_tick_sign" value="1.0" />
-    <param name="rate" value="30.0" />
-  </node>
+  <node pkg="magni_nav" type="odom_publisher.py" name="odom_publisher" output="screen" />
 
   <include file="$(find rplidar_ros)/launch/rplidar_a3.launch" />
 
   <node pkg="map_server" type="map_server" name="map_server" args="$(find magni_nav)/maps/map_final1_cropped.yaml" />
 
   <node pkg="amcl" type="amcl" name="amcl" output="screen">
-    <param name="base_frame_id" value="$(arg base_frame)" />
-    <param name="odom_frame_id" value="$(arg odom_frame)" />
+    <param name="base_frame_id" value="base_footprint" />
+    <param name="odom_frame_id" value="odom" />
     <param name="global_frame_id" value="map" />
     <param name="transform_tolerance" value="0.3" />
     <param name="update_min_d" value="0.05" />
@@ -45,8 +26,6 @@
 
   <include file="$(find magni_nav)/launch/move_base.launch" />
 
-  <node pkg="tf" type="static_transform_publisher" name="base_to_laser"
-        args="$(arg laser_x) $(arg laser_y) $(arg laser_z) $(arg laser_yaw) 0.0 0.0 $(arg base_frame) $(arg laser_frame) 100" />
-  <node pkg="tf" type="static_transform_publisher" name="laser_to_base_laser_link"
-        args="0.0 0.0 0.0 0.0 0.0 0.0 $(arg laser_frame) $(arg base_laser_frame) 100" />
+  <node pkg="tf" type="static_transform_publisher" name="base_to_laser" args="0.0 0.0 0.2 0.0 0.0 0.0 base_footprint laser 100" />
+  <node pkg="tf" type="static_transform_publisher" name="laser_to_base_laser_link" args="0.0 0.0 0.0 0.0 0.0 0.0 laser base_laser_link 100" />
 </launch>
