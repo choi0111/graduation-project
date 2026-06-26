@@ -8,7 +8,7 @@
 
   <include file="$(find rplidar_ros)/launch/rplidar_a3.launch" />
 
-  <node pkg="map_server" type="map_server" name="map_server" args="$(find magni_nav)/maps/map_final1.yaml" />
+  <node pkg="map_server" type="map_server" name="map_server" args="$(find magni_nav)/maps/map_final1_cropped.yaml" />
 
   <node pkg="amcl" type="amcl" name="amcl" output="screen">
     <param name="base_frame_id" value="base_footprint" />
