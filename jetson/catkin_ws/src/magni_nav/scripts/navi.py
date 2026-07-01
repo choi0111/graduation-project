@@ -4,10 +4,13 @@
 import rospy
 import actionlib
 import sys
+import json
+import threading
 import tf
 from actionlib_msgs.msg import GoalStatus
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from geometry_msgs.msg import Twist
+from std_msgs.msg import String
 
 # =========================================================
 # 1. [완벽 복구된 좌표 데이터베이스]
@@ -45,6 +48,25 @@ locations = {
 cmd_vel_pub = None
 tf_listener = None
 
+try:
+    text_type = unicode
+    binary_type = str
+except NameError:
+    text_type = str
+    binary_type = bytes
+
+
+def as_text(value):
+    if isinstance(value, text_type):
+        return value
+    if isinstance(value, binary_type):
+        return value.decode('utf-8')
+    return text_type(value)
+
+
+locations = dict((as_text(key), value) for key, value in locations.items())
+
+
 def get_current_yaw():
     global tf_listener
     try:
@@ -53,112 +75,276 @@ def get_current_yaw():
     except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
         return None
 
-# =========================================================
-# 2. [안전 탈출 및 후진 로직]
-# =========================================================
-def backup_50cm():
-    """배달 완료 후 좁은 문 앞 공간을 빠져나오기 위해 50cm 후진"""
-    global cmd_vel_pub
-    print("\n🚗 [안전 확보] 문 앞 공간을 빠져나오기 위해 50cm 후진합니다...")
-    twist = Twist()
-    twist.linear.x = -0.15  # 마그니 로봇이 미끄러지지 않는 안전한 후진 속도
-    rate = rospy.Rate(10)
-    
-    # 0.15m/s * 35번(3.5초) = 약 52cm 후진
-    for _ in range(35):
-        if rospy.is_shutdown(): break
+
+def normalize_room_name(value):
+    if value is None:
+        return None
+    room = as_text(value).strip().lower().replace(" ", "")
+    if not room:
+        return None
+    if room in [u"엘베", u"엘리베이터", "elevator"]:
+        return u"엘베"
+    if room.endswith(u"호"):
+        return room
+    return room + u"호"
+
+
+def room_for_status(location_name):
+    room = location_name.replace(u"_중앙", "")
+    if room.endswith(u"호"):
+        return room[:-1]
+    return room
+
+
+class DeliveryNavigator(object):
+    def __init__(self):
+        global cmd_vel_pub, tf_listener
+        rospy.init_node('navi_cmd_node')
+        cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
+        self.status_pub = rospy.Publisher('/robot_status', String, queue_size=10)
+        self.command_sub = rospy.Subscriber('/llm_command', String, self.command_callback)
+        tf_listener = tf.TransformListener()
+
+        self.client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
+        self.mission_lock = threading.Lock()
+        self.active_thread = None
+        self.paused = False
+        self.cancel_mission = False
+        self.item_received = False
+        self.current_state = "IDLE"
+        self.current_target = ""
+
+        rospy.sleep(1.0)
+        print("⏳ 자율주행 서버 대기 중...")
+        self.client.wait_for_server()
+        self.publish_status("IDLE")
+
+    def publish_status(self, status):
+        self.current_state = status
+        self.status_pub.publish(status)
+        rospy.loginfo("[robot_status] %s", status)
+
+    def stop_robot(self):
+        twist = Twist()
         cmd_vel_pub.publish(twist)
-        rate.sleep()
-        
-    twist.linear.x = 0.0
-    cmd_vel_pub.publish(twist)
-    rospy.sleep(1.0)
-    print("✅ 후진 완료. 다음 목적지로 주행을 준비합니다.")
 
-# =========================================================
-# 3. [자율 주행 핵심 구동 로직]
-# =========================================================
-def move_to_goal(client, location_name):
-    global tf_listener
-    if location_name not in locations:
-        print("❌ '{}' 좌표가 데이터베이스에 없습니다.".format(location_name))
-        return False
-        
-    x, y, z_ori, w_ori = locations[location_name]
+    def build_goal(self, location_name):
+        x, y, z_ori, w_ori = locations[location_name]
+        current_yaw = get_current_yaw()
+        if current_yaw is not None:
+            q = tf.transformations.quaternion_from_euler(0, 0, current_yaw)
+            z_ori = q[2]
+            w_ori = q[3]
 
-    # 목적지 좌표까지의 이동이 목표이므로 goal yaw는 현재 로봇 yaw를 유지한다.
-    # 이렇게 하면 문 앞 최종 자세를 맞추려고 시작부터 제자리 회전하는 동작을 줄일 수 있다.
-    current_yaw = get_current_yaw()
-    if current_yaw is not None:
-        q = tf.transformations.quaternion_from_euler(0, 0, current_yaw)
-        z_ori = q[2]
-        w_ori = q[3]
+        goal = MoveBaseGoal()
+        goal.target_pose.header.frame_id = "map"
+        goal.target_pose.header.stamp = rospy.Time.now()
+        goal.target_pose.pose.position.x = x
+        goal.target_pose.pose.position.y = y
+        goal.target_pose.pose.orientation.z = z_ori
+        goal.target_pose.pose.orientation.w = w_ori
+        return goal
 
-    goal = MoveBaseGoal()
-    goal.target_pose.header.frame_id = "map"
-    goal.target_pose.header.stamp = rospy.Time.now()
-    goal.target_pose.pose.position.x = x
-    goal.target_pose.pose.position.y = y
-    goal.target_pose.pose.orientation.z = z_ori
-    goal.target_pose.pose.orientation.w = w_ori
+    def wait_while_paused(self):
+        while self.paused and not rospy.is_shutdown():
+            self.stop_robot()
+            rospy.sleep(0.2)
 
-    print("\n>>> 🚀 [{}] 이동 시작...".format(location_name))
-    client.send_goal(goal)
-    client.wait_for_result()
-    
-    state = client.get_state()
-    if state == GoalStatus.SUCCEEDED:
-        print("✅ [{}] 도착 완료!".format(location_name))
+    def move_to_goal(self, location_name):
+        if location_name not in locations:
+            print("❌ '{}' 좌표가 데이터베이스에 없습니다.".format(location_name))
+            return False
+
+        print("\n>>> 🚀 [{}] 이동 시작...".format(location_name))
+        while not rospy.is_shutdown():
+            if self.cancel_mission:
+                self.client.cancel_goal()
+                self.stop_robot()
+                return False
+
+            self.wait_while_paused()
+            if self.cancel_mission or rospy.is_shutdown():
+                return False
+
+            self.client.send_goal(self.build_goal(location_name))
+            while not rospy.is_shutdown():
+                if self.cancel_mission:
+                    self.client.cancel_goal()
+                    self.stop_robot()
+                    return False
+                if self.paused:
+                    self.client.cancel_goal()
+                    self.stop_robot()
+                    self.wait_while_paused()
+                    break
+                if self.client.wait_for_result(rospy.Duration(0.2)):
+                    state = self.client.get_state()
+                    if state == GoalStatus.SUCCEEDED:
+                        print("✅ [{}] 도착 완료!".format(location_name))
+                        return True
+                    print("❌ [{}] 도착 실패. (상태 코드: {})".format(location_name, state))
+                    return False
+
+    def move_to_room(self, room_name):
+        center_target = room_name + u"_중앙"
+        if center_target in locations:
+            if not self.move_to_goal(center_target):
+                print("⚠️ [{}] 중앙 경유 실패. 최종 목적지 진입을 생략합니다.".format(room_name))
+                return False
+            rospy.sleep(1.0)
+        return self.move_to_goal(room_name)
+
+    def backup_50cm(self):
+        print("\n🚗 [안전 확보] 문 앞 공간을 빠져나오기 위해 50cm 후진합니다...")
+        twist = Twist()
+        twist.linear.x = -0.15
+        rate = rospy.Rate(10)
+        for _ in range(35):
+            if rospy.is_shutdown() or self.cancel_mission:
+                break
+            self.wait_while_paused()
+            cmd_vel_pub.publish(twist)
+            rate.sleep()
+        self.stop_robot()
+        rospy.sleep(1.0)
+        print("✅ 후진 완료. 다음 목적지로 주행을 준비합니다.")
+
+    def wait_for_item(self, room_name, has_next):
+        self.item_received = False
+        self.publish_status("ARRIVED:{}".format(room_for_status(room_name)))
+        self.status_pub.publish("SCENARIO_5")
+        rospy.loginfo("[WAITING] 물품 수령 확인을 위해 20초 대기합니다.")
+
+        remaining_ticks = 40
+        while remaining_ticks > 0 and not rospy.is_shutdown():
+            if self.cancel_mission:
+                return False
+            if self.paused:
+                self.wait_while_paused()
+                continue
+            if self.item_received:
+                if has_next:
+                    self.status_pub.publish("SCENARIO_8")
+                    rospy.sleep(2.0)
+                return True
+            rospy.sleep(0.5)
+            remaining_ticks -= 1
+
+        self.status_pub.publish("SCENARIO_13")
+        rospy.loginfo("[TIMEOUT] 물품 수령 확인 없음. 배송 실패 처리 후 다음 목적지로 넘어갑니다.")
+        rospy.sleep(3.0)
         return True
-    else:
-        print("❌ [{}] 도착 실패. (상태 코드: {})".format(location_name, state))
-        return False
 
-# =========================================================
-# 4. [메인 루프]
-# =========================================================
-def main():
-    global cmd_vel_pub, tf_listener
-    rospy.init_node('navi_cmd_node')
-    cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
-    
-    # 실시간 좌표 변환용 리스너 세팅
-    tf_listener = tf.TransformListener()
-    rospy.sleep(1.0)
+    def run_delivery_journey(self, rooms):
+        normalized_rooms = []
+        for room in rooms:
+            normalized = normalize_room_name(room)
+            if normalized in locations:
+                normalized_rooms.append(normalized)
+            else:
+                rospy.logwarn("Unknown delivery room ignored: %s", room)
 
-    input_goals = sys.argv[1:]
-    if not input_goals: 
-        print("사용법: rosrun magni_nav navi.py 544호 542호")
-        return
+        if not normalized_rooms:
+            rospy.logwarn("No valid delivery rooms in command: %s", rooms)
+            self.publish_status("IDLE")
+            return
 
-    client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
-    print("⏳ 자율주행 서버 대기 중...")
-    client.wait_for_server()
+        with self.mission_lock:
+            self.cancel_mission = False
+            self.paused = False
 
-    try:
-        for i, target in enumerate(input_goals):
-            if rospy.is_shutdown(): break
-            
-            # 단계 1: 목적지 호수의 '중앙' 경유지가 데이터베이스에 있다면 먼저 직진 주행
-            center_target = target + "_중앙"
-            if center_target in locations:
-                if not move_to_goal(client, center_target):
-                    print("⚠️ [{}] 중앙 경유 실패. 최종 목적지 진입을 생략합니다.".format(target))
-                    continue
-                rospy.sleep(1.0)
-            
-            # 단계 2: 중앙 도착 후, 실제 최종 문 앞 목적지로 진입
-            success = move_to_goal(client, target)
-            
-            # 단계 3: 성공적으로 문 앞에 도착했고, 뒤에 목적지가 더 남아있다면 안전하게 50cm 후진 탈출
-            if success and i < len(input_goals) - 1:
+        for index, room in enumerate(normalized_rooms):
+            if rospy.is_shutdown() or self.cancel_mission:
+                return
+
+            self.current_target = room_for_status(room)
+            self.publish_status("MOVING:{}".format(self.current_target))
+            success = self.move_to_room(room)
+            if not success:
+                self.stop_robot()
+                self.publish_status("IDLE")
+                return
+
+            has_next = index < len(normalized_rooms) - 1
+            if not self.wait_for_item(room, has_next):
+                return
+            if has_next:
+                self.backup_50cm()
+
+        self.status_pub.publish("SCENARIO_9")
+        rospy.sleep(3.0)
+        if u"엘베" in locations:
+            self.publish_status("RETURNING")
+            self.move_to_room(u"엘베")
+        self.publish_status("IDLE")
+
+    def command_callback(self, msg):
+        try:
+            data = json.loads(msg.data)
+            cmd = data.get("command")
+            payload = data.get("payload", [])
+            if not isinstance(payload, list):
+                payload = [payload]
+        except Exception as exc:
+            rospy.logwarn("Invalid /llm_command message: %s", exc)
+            return
+
+        rospy.loginfo("[LLM command] %s %s", cmd, payload)
+
+        if cmd == "SCENARIO_21":
+            self.paused = True
+            self.client.cancel_goal()
+            self.stop_robot()
+            self.publish_status("PAUSED")
+            return
+
+        if cmd == "SCENARIO_22":
+            if self.paused:
+                self.paused = False
+                if self.current_target:
+                    self.publish_status("MOVING:{}".format(self.current_target))
+            return
+
+        if cmd == "SCENARIO_8":
+            self.item_received = True
+            return
+
+        if cmd not in ["SCENARIO_1", "SCENARIO_2", "SCENARIO_3", "SCENARIO_4", "SCENARIO_6"]:
+            return
+
+        if self.active_thread and self.active_thread.is_alive():
+            rospy.logwarn("Mission already running. New command ignored: %s", payload)
+            return
+
+        self.active_thread = threading.Thread(target=self.run_delivery_journey, args=(payload,))
+        self.active_thread.daemon = True
+        self.active_thread.start()
+
+    def run_cli_goals(self, goals):
+        for index, target in enumerate(goals):
+            if rospy.is_shutdown():
+                break
+            room = normalize_room_name(target)
+            if room not in locations:
+                print("❌ '{}' 좌표가 데이터베이스에 없습니다.".format(target))
+                continue
+            success = self.move_to_room(room)
+            if success and index < len(goals) - 1:
                 rospy.sleep(2.0)
-                backup_50cm()
-                
-    except KeyboardInterrupt:
-        print("\n🛑 사용자 강제 종료 수신")
-        
-    print("\n=== 🎉 모든 배달 주행 시퀀스 완전 종료 ===")
+                self.backup_50cm()
+        print("\n=== 🎉 모든 배달 주행 시퀀스 완전 종료 ===")
+
+    def run(self):
+        input_goals = sys.argv[1:]
+        if input_goals:
+            self.run_cli_goals(input_goals)
+        else:
+            print("🎙️ 음성 명령 대기 중: /llm_command 토픽을 기다립니다.")
+            rospy.spin()
+
 
 if __name__ == '__main__':
-    main()
+    try:
+        DeliveryNavigator().run()
+    except rospy.ROSInterruptException:
+        pass
