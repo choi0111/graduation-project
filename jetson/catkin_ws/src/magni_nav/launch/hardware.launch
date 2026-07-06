@@ -6,7 +6,15 @@
 
   <node pkg="magni_nav" type="odom_publisher.py" name="odom_publisher" output="screen" />
 
-  <include file="$(find rplidar_ros)/launch/rplidar_a3.launch" />
+  <arg name="rplidar_port" default="/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_89d98cb1e25d684a9a9a1ba3000b680e-if00-port0" />
+  <node pkg="rplidar_ros" type="rplidarNode" name="rplidarNode" output="screen">
+    <param name="serial_port" value="$(arg rplidar_port)" />
+    <param name="serial_baudrate" value="256000" />
+    <param name="frame_id" value="laser" />
+    <param name="inverted" value="false" />
+    <param name="angle_compensate" value="true" />
+    <param name="scan_mode" value="Sensitivity" />
+  </node>
 
   <node pkg="tf" type="static_transform_publisher" name="base_to_laser" args="0.0 0.0 0.90 0.0 0.0 0.0 base_footprint laser 100" />
   
