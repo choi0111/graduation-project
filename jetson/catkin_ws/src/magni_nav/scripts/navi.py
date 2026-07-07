@@ -6,11 +6,16 @@ import actionlib
 import sys
 import json
 import threading
+import codecs
 import tf
 from actionlib_msgs.msg import GoalStatus
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from geometry_msgs.msg import Twist
 from std_msgs.msg import String
+
+if sys.version_info[0] < 3:
+    sys.stdout = codecs.getwriter('utf-8')(sys.stdout)
+    sys.stderr = codecs.getwriter('utf-8')(sys.stderr)
 
 # =========================================================
 # 1. [완벽 복구된 좌표 데이터베이스]
