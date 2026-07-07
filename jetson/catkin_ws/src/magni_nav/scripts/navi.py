@@ -69,6 +69,13 @@ def as_text(value):
     return text_type(value)
 
 
+def console_text(value):
+    value = as_text(value)
+    if sys.version_info[0] < 3:
+        return value.encode('utf-8')
+    return value
+
+
 locations = dict((as_text(key), value) for key, value in locations.items())
 
 
@@ -157,10 +164,10 @@ class DeliveryNavigator(object):
 
     def move_to_goal(self, location_name):
         if location_name not in locations:
-            print("❌ '{}' 좌표가 데이터베이스에 없습니다.".format(location_name))
+            print("❌ '{}' 좌표가 데이터베이스에 없습니다.".format(console_text(location_name)))
             return False
 
-        print("\n>>> 🚀 [{}] 이동 시작...".format(location_name))
+        print("\n>>> 🚀 [{}] 이동 시작...".format(console_text(location_name)))
         while not rospy.is_shutdown():
             if self.cancel_mission:
                 self.client.cancel_goal()
@@ -185,16 +192,16 @@ class DeliveryNavigator(object):
                 if self.client.wait_for_result(rospy.Duration(0.2)):
                     state = self.client.get_state()
                     if state == GoalStatus.SUCCEEDED:
-                        print("✅ [{}] 도착 완료!".format(location_name))
+                        print("✅ [{}] 도착 완료!".format(console_text(location_name)))
                         return True
-                    print("❌ [{}] 도착 실패. (상태 코드: {})".format(location_name, state))
+                    print("❌ [{}] 도착 실패. (상태 코드: {})".format(console_text(location_name), state))
                     return False
 
     def move_to_room(self, room_name):
         center_target = room_name + u"_중앙"
         if center_target in locations:
             if not self.move_to_goal(center_target):
-                print("⚠️ [{}] 중앙 경유 실패. 최종 목적지 진입을 생략합니다.".format(room_name))
+                print("⚠️ [{}] 중앙 경유 실패. 최종 목적지 진입을 생략합니다.".format(console_text(room_name)))
                 return False
             rospy.sleep(1.0)
         return self.move_to_goal(room_name)
@@ -331,7 +338,7 @@ class DeliveryNavigator(object):
                 break
             room = normalize_room_name(target)
             if room not in locations:
-                print("❌ '{}' 좌표가 데이터베이스에 없습니다.".format(target))
+                print("❌ '{}' 좌표가 데이터베이스에 없습니다.".format(console_text(target)))
                 continue
             success = self.move_to_room(room)
             if success and index < len(goals) - 1:
