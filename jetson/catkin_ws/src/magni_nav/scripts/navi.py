@@ -6,16 +6,11 @@ import actionlib
 import sys
 import json
 import threading
-import codecs
 import tf
 from actionlib_msgs.msg import GoalStatus
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from geometry_msgs.msg import Twist
 from std_msgs.msg import String
-
-if sys.version_info[0] < 3:
-    sys.stdout = codecs.getwriter('utf-8')(sys.stdout)
-    sys.stderr = codecs.getwriter('utf-8')(sys.stderr)
 
 # =========================================================
 # 1. [완벽 복구된 좌표 데이터베이스]
@@ -71,9 +66,10 @@ def as_text(value):
 
 def console_text(value):
     value = as_text(value)
-    if sys.version_info[0] < 3:
-        return value.encode('utf-8')
-    return value
+    value = value.replace(u"호", "ho")
+    value = value.replace(u"_중앙", "_center")
+    value = value.replace(u"엘베", "elevator")
+    return value.encode('ascii', 'ignore')
 
 
 locations = dict((as_text(key), value) for key, value in locations.items())
@@ -127,7 +123,7 @@ class DeliveryNavigator(object):
         self.current_target = ""
 
         rospy.sleep(1.0)
-        print("⏳ 자율주행 서버 대기 중...")
+        print("[navi] waiting for move_base server...")
         self.client.wait_for_server()
         self.publish_status("IDLE")
 
@@ -164,10 +160,10 @@ class DeliveryNavigator(object):
 
     def move_to_goal(self, location_name):
         if location_name not in locations:
-            print("❌ '{}' 좌표가 데이터베이스에 없습니다.".format(console_text(location_name)))
+            print("[navi] unknown location: {}".format(console_text(location_name)))
             return False
 
-        print("\n>>> 🚀 [{}] 이동 시작...".format(console_text(location_name)))
+        print("\n[navi] moving to {}".format(console_text(location_name)))
         while not rospy.is_shutdown():
             if self.cancel_mission:
                 self.client.cancel_goal()
@@ -192,22 +188,22 @@ class DeliveryNavigator(object):
                 if self.client.wait_for_result(rospy.Duration(0.2)):
                     state = self.client.get_state()
                     if state == GoalStatus.SUCCEEDED:
-                        print("✅ [{}] 도착 완료!".format(console_text(location_name)))
+                        print("[navi] arrived at {}".format(console_text(location_name)))
                         return True
-                    print("❌ [{}] 도착 실패. (상태 코드: {})".format(console_text(location_name), state))
+                    print("[navi] failed to reach {}. state={}".format(console_text(location_name), state))
                     return False
 
     def move_to_room(self, room_name):
         center_target = room_name + u"_중앙"
         if center_target in locations:
             if not self.move_to_goal(center_target):
-                print("⚠️ [{}] 중앙 경유 실패. 최종 목적지 진입을 생략합니다.".format(console_text(room_name)))
+                print("[navi] center waypoint failed for {}; skipping final approach".format(console_text(room_name)))
                 return False
             rospy.sleep(1.0)
         return self.move_to_goal(room_name)
 
     def backup_50cm(self):
-        print("\n🚗 [안전 확보] 문 앞 공간을 빠져나오기 위해 50cm 후진합니다...")
+        print("\n[navi] backing up 50cm before next goal")
         twist = Twist()
         twist.linear.x = -0.15
         rate = rospy.Rate(10)
@@ -219,7 +215,7 @@ class DeliveryNavigator(object):
             rate.sleep()
         self.stop_robot()
         rospy.sleep(1.0)
-        print("✅ 후진 완료. 다음 목적지로 주행을 준비합니다.")
+        print("[navi] backup complete")
 
     def wait_for_item(self, room_name, has_next):
         self.item_received = False
@@ -338,20 +334,20 @@ class DeliveryNavigator(object):
                 break
             room = normalize_room_name(target)
             if room not in locations:
-                print("❌ '{}' 좌표가 데이터베이스에 없습니다.".format(console_text(target)))
+                print("[navi] unknown location: {}".format(console_text(target)))
                 continue
             success = self.move_to_room(room)
             if success and index < len(goals) - 1:
                 rospy.sleep(2.0)
                 self.backup_50cm()
-        print("\n=== 🎉 모든 배달 주행 시퀀스 완전 종료 ===")
+        print("\n[navi] delivery sequence complete")
 
     def run(self):
         input_goals = sys.argv[1:]
         if input_goals:
             self.run_cli_goals(input_goals)
         else:
-            print("🎙️ 음성 명령 대기 중: /llm_command 토픽을 기다립니다.")
+            print("[navi] waiting for /llm_command")
             rospy.spin()
 
 
