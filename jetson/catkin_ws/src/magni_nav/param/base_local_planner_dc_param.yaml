@@ -1,0 +1,45 @@
+DWAPlannerROS:
+  # Temporary encoderless DC motor mode.
+  # Keep the commanded motion very slow so AMCL can correct small open-loop errors.
+  max_vel_x: 0.04
+  min_vel_x: 0.01
+
+  max_vel_y: 0.0
+  min_vel_y: 0.0
+
+  max_vel_trans: 0.04
+  min_vel_trans: 0.01
+  trans_stopped_vel: 0.005
+
+  max_vel_theta: 0.05
+  min_vel_theta: 0.01
+  theta_stopped_vel: 0.01
+
+  acc_lim_x: 0.03
+  acc_lim_theta: 0.04
+  acc_lim_y: 0.0
+
+  yaw_goal_tolerance: 3.14
+  xy_goal_tolerance: 0.45
+  latch_xy_goal_tolerance: true
+
+  sim_time: 1.0
+  sim_granularity: 0.05
+  angular_sim_granularity: 0.10
+  vx_samples: 3
+  vy_samples: 1
+  vtheta_samples: 3
+
+  # Bias toward staying on the global corridor path; avoid aggressive shortcutting.
+  path_distance_bias: 64.0
+  goal_distance_bias: 4.0
+  occdist_scale: 0.10
+  forward_point_distance: 0.25
+
+  stop_time_buffer: 0.5
+  scaling_speed: 0.04
+  max_scaling_factor: 0.1
+  oscillation_reset_dist: 0.05
+  prune_plan: true
+  meter_scoring: true
+  holonomic_robot: false

@@ -1,0 +1,16 @@
+<launch>
+  <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+    <param name="base_local_planner" value="dwa_local_planner/DWAPlannerROS" />
+    <param name="planner_frequency" value="0.2" />
+    <param name="controller_frequency" value="2.0" />
+    <param name="planner_patience" value="8.0" />
+    <param name="controller_patience" value="8.0" />
+    <param name="conservative_reset_dist" value="0.3" />
+
+    <rosparam file="$(find magni_nav)/param/costmap_common_param.yaml" command="load" ns="local_costmap" />
+    <rosparam file="$(find magni_nav)/param/costmap_common_param.yaml" command="load" ns="global_costmap" />
+    <rosparam file="$(find magni_nav)/param/local_costmap_param.yaml" command="load" />
+    <rosparam file="$(find magni_nav)/param/global_costmap_param.yaml" command="load" />
+    <rosparam file="$(find magni_nav)/param/base_local_planner_dc_param.yaml" command="load" />
+  </node>
+</launch>

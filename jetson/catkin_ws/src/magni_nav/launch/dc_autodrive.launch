@@ -6,11 +6,11 @@
 
   <!-- Encoderless DC motor test mode: use /cmd_vel integration instead of wheel tick odometry. -->
   <node pkg="magni_nav" type="encoderless_fake_odom.py" name="encoderless_fake_odom" output="screen">
-    <param name="linear_scale" value="1.0" />
-    <param name="angular_scale" value="1.0" />
-    <param name="max_linear" value="0.08" />
-    <param name="max_angular" value="0.20" />
-    <param name="cmd_timeout" value="0.4" />
+    <param name="linear_scale" value="0.70" />
+    <param name="angular_scale" value="0.55" />
+    <param name="max_linear" value="0.04" />
+    <param name="max_angular" value="0.05" />
+    <param name="cmd_timeout" value="0.8" />
   </node>
 
   <arg name="rplidar_port" default="/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_89d98cb1e25d684a9a9a1ba3000b680e-if00-port0" />
@@ -39,7 +39,7 @@
     <param name="max_particles" value="2000" />
   </node>
 
-  <include file="$(find magni_nav)/launch/move_base.launch" />
+  <include file="$(find magni_nav)/launch/move_base_dc.launch" />
 
   <node pkg="tf" type="static_transform_publisher" name="base_to_laser" args="0.0 0.0 0.2 0.0 0.0 0.0 base_footprint laser 100" />
   <node pkg="tf" type="static_transform_publisher" name="laser_to_base_laser_link" args="0.0 0.0 0.0 0.0 0.0 0.0 laser base_laser_link 100" />
