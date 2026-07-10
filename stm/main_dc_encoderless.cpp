@@ -35,6 +35,7 @@ UART_HandleTypeDef huart2;
 
 #define MAX_LINEAR_X_MPS      0.04f
 #define MAX_ANGULAR_Z_RADPS   0.05f
+#define FORWARD_STEER_GAIN    0.35f
 
 #define PWM_MAX_CCR           49
 
@@ -636,8 +637,11 @@ void cmdVelCallback(const geometry_msgs::Twist& cmd_msg)
   cmd_linear_x = linear_x;
   cmd_angular_z = angular_z;
 
-  target_left_mps  = linear_x - angular_z * WHEEL_BASE_M / 2.0f;
-  target_right_mps = linear_x + angular_z * WHEEL_BASE_M / 2.0f;
+  float steer_gain = (abs_float(linear_x) > 0.005f) ? FORWARD_STEER_GAIN : 1.0f;
+  float angular_wheel_mps = angular_z * WHEEL_BASE_M * steer_gain / 2.0f;
+
+  target_left_mps  = linear_x - angular_wheel_mps;
+  target_right_mps = linear_x + angular_wheel_mps;
 
   target_left_mps =
       clamp_float(target_left_mps, -MAX_LINEAR_X_MPS, MAX_LINEAR_X_MPS);

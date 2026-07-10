@@ -2,13 +2,13 @@ DWAPlannerROS:
   # Temporary encoderless DC motor mode.
   # Keep the commanded motion very slow so AMCL can correct small open-loop errors.
   max_vel_x: 0.04
-  min_vel_x: 0.01
+  min_vel_x: 0.02
 
   max_vel_y: 0.0
   min_vel_y: 0.0
 
   max_vel_trans: 0.04
-  min_vel_trans: 0.01
+  min_vel_trans: 0.02
   trans_stopped_vel: 0.005
 
   max_vel_theta: 0.03
