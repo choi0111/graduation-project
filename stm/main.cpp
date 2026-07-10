@@ -708,7 +708,6 @@ int main(void)
 
   reset_pid();
 
-  nh.getHardware()->setBaud(115200);
   nh.initNode();
 
   nh.advertise(ticks_pub);

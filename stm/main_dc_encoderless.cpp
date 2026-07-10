@@ -184,10 +184,6 @@ static void right_dir(uint8_t rev);
 static void left_dir(uint8_t rev);
 
 static int speed_to_signed_pwm(float target_mps);
-static int limited_pid_correction(float target_mps,
-                                  float measured_mps,
-                                  float *integral,
-                                  float *prev_error);
 
 static void set_left_motor_signed(int signed_pwm);
 static void set_right_motor_signed(int signed_pwm);
@@ -323,7 +319,7 @@ static int speed_to_signed_pwm(float target_mps)
  * 제한 PID 보정
  * 현재는 P만 사용하고 보정량은 -1 ~ +1로 제한.
  */
-static int limited_pid_correction(float target_mps,
+static int __attribute__((unused)) limited_pid_correction(float target_mps,
                                   float measured_mps,
                                   float *integral,
                                   float *prev_error)
@@ -662,7 +658,6 @@ int main(void)
 
   reset_pid();
 
-  nh.getHardware()->setBaud(115200);
   nh.initNode();
 
   nh.advertise(ticks_pub);
