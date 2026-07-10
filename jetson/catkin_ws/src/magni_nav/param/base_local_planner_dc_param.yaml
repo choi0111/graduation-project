@@ -11,12 +11,12 @@ DWAPlannerROS:
   min_vel_trans: 0.01
   trans_stopped_vel: 0.005
 
-  max_vel_theta: 0.05
-  min_vel_theta: 0.01
-  theta_stopped_vel: 0.01
+  max_vel_theta: 0.03
+  min_vel_theta: 0.005
+  theta_stopped_vel: 0.005
 
   acc_lim_x: 0.03
-  acc_lim_theta: 0.04
+  acc_lim_theta: 0.02
   acc_lim_y: 0.0
 
   yaw_goal_tolerance: 3.14

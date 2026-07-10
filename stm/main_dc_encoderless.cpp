@@ -48,6 +48,9 @@ UART_HandleTypeDef huart2;
 
 #define PWM_OUTPUT_LIMIT       56
 
+#define ROTATE_PWM_MIN         18
+#define ROTATE_PWM_LIMIT       28
+
 /*
  * 기본 최소 구동 PWM
  */
@@ -184,6 +187,7 @@ static void right_dir(uint8_t rev);
 static void left_dir(uint8_t rev);
 
 static int speed_to_signed_pwm(float target_mps);
+static int rotate_speed_to_signed_pwm(float target_mps);
 
 static void set_left_motor_signed(int signed_pwm);
 static void set_right_motor_signed(int signed_pwm);
@@ -304,6 +308,37 @@ static int speed_to_signed_pwm(float target_mps)
               * (float)(limit - PWM_MIN_MOVE));
 
   pwm_abs = clamp_int(pwm_abs, PWM_MIN_MOVE, limit);
+
+  if (target_mps >= 0.0f)
+  {
+    return pwm_abs;
+  }
+  else
+  {
+    return -pwm_abs;
+  }
+}
+
+static int rotate_speed_to_signed_pwm(float target_mps)
+{
+  float speed_abs = abs_float(target_mps);
+  float max_rotate_wheel_mps = MAX_ANGULAR_Z_RADPS * WHEEL_BASE_M / 2.0f;
+
+  if (speed_abs < 0.002f)
+  {
+    return 0;
+  }
+
+  if (max_rotate_wheel_mps < 0.002f)
+  {
+    max_rotate_wheel_mps = 0.002f;
+  }
+
+  int pwm_abs = ROTATE_PWM_MIN
+              + (int)((speed_abs / max_rotate_wheel_mps)
+              * (float)(ROTATE_PWM_LIMIT - ROTATE_PWM_MIN));
+
+  pwm_abs = clamp_int(pwm_abs, ROTATE_PWM_MIN, ROTATE_PWM_LIMIT);
 
   if (target_mps >= 0.0f)
   {
@@ -480,8 +515,16 @@ static void apply_open_loop_limited_pid_outputs(void)
     return;
   }
 
-  base_left_pwm = speed_to_signed_pwm(target_left_mps);
-  base_right_pwm = speed_to_signed_pwm(target_right_mps);
+  if (abs_float(cmd_linear_x) < 0.005f && abs_float(cmd_angular_z) > 0.002f)
+  {
+    base_left_pwm = rotate_speed_to_signed_pwm(target_left_mps);
+    base_right_pwm = rotate_speed_to_signed_pwm(target_right_mps);
+  }
+  else
+  {
+    base_left_pwm = speed_to_signed_pwm(target_left_mps);
+    base_right_pwm = speed_to_signed_pwm(target_right_mps);
+  }
 
   /* Encoderless DC motors have no reliable speed feedback here.
    * Keep this temporary controller open-loop and proportional to cmd_vel.

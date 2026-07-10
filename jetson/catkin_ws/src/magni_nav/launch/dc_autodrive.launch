@@ -7,9 +7,9 @@
   <!-- Encoderless DC motor test mode: use /cmd_vel integration instead of wheel tick odometry. -->
   <node pkg="magni_nav" type="encoderless_fake_odom.py" name="encoderless_fake_odom" output="screen">
     <param name="linear_scale" value="0.70" />
-    <param name="angular_scale" value="0.55" />
+    <param name="angular_scale" value="1.0" />
     <param name="max_linear" value="0.04" />
-    <param name="max_angular" value="0.05" />
+    <param name="max_angular" value="0.03" />
     <param name="cmd_timeout" value="0.8" />
   </node>
 

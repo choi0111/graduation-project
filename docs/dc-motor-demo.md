@@ -68,6 +68,7 @@ lower PWM range:
 - `PWM_MIN_MOVE`: `32`
 - `FORWARD_PWM_LIMIT`: `56`
 - `BACKWARD_PWM_LIMIT`: `44`
+- pure rotation PWM range: `18` to `28`
 
 Encoderless mode can drift. It is acceptable only for a slow demo in a simple,
 obstacle-free corridor. Final autonomous driving should use encoder motors.
