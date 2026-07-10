@@ -43,21 +43,21 @@ UART_HandleTypeDef huart2;
  * 전진 최대: 25
  * 후진 최대: 15
  */
-#define FORWARD_PWM_LIMIT      28
-#define BACKWARD_PWM_LIMIT     22
+#define FORWARD_PWM_LIMIT      56
+#define BACKWARD_PWM_LIMIT     44
 
-#define PWM_OUTPUT_LIMIT       28
+#define PWM_OUTPUT_LIMIT       56
 
 /*
  * 기본 최소 구동 PWM
  */
-#define PWM_MIN_MOVE           16
+#define PWM_MIN_MOVE           32
 
 /*
  * 후진 전용 최소 PWM
  */
-#define LEFT_BWD_MIN_PWM       16
-#define RIGHT_BWD_MIN_PWM      16
+#define LEFT_BWD_MIN_PWM       32
+#define RIGHT_BWD_MIN_PWM      32
 
 #define CONTROL_PERIOD_MS      50
 #define CONTROL_DT_SEC         0.05f
@@ -87,7 +87,7 @@ UART_HandleTypeDef huart2;
  * ROS 계산상 왼쪽이 약 15 정도 나올 수 있으므로 0.80을 곱해 약 12로 맞춤.
  */
 #define FWD_LEFT_TURN_LEFT_TRIM      1.00f
-#define FWD_LEFT_TURN_LEFT_MIN_PWM   16
+#define FWD_LEFT_TURN_LEFT_MIN_PWM   32
 
 /*
  * 후진 중 오른쪽 모터가 더 빨라져야 하는 상황 보정
@@ -95,7 +95,7 @@ UART_HandleTypeDef huart2;
  * STM 단독 테스트에서 후진 좌회전은 LEFT 12 / RIGHT 14가 만족스러웠음.
  * 따라서 오른쪽 후진 fast 상황은 14까지만 제한.
  */
-#define REV_RIGHT_FAST_LIMIT         22
+#define REV_RIGHT_FAST_LIMIT         44
 
 #define PID_KP                 0.0f
 #define PID_KI                 0.0f

@@ -61,5 +61,13 @@ If the motors do not start at low command speed, tune these in
 - `FORWARD_PWM_LIMIT`
 - `BACKWARD_PWM_LIMIT`
 
+The current DC test values are intentionally higher than the first conservative
+setting because the test motors did not reliably overcome static friction at the
+lower PWM range:
+
+- `PWM_MIN_MOVE`: `32`
+- `FORWARD_PWM_LIMIT`: `56`
+- `BACKWARD_PWM_LIMIT`: `44`
+
 Encoderless mode can drift. It is acceptable only for a slow demo in a simple,
 obstacle-free corridor. Final autonomous driving should use encoder motors.
