@@ -30,68 +30,114 @@ UART_HandleTypeDef huart2;
 #define WHEEL_DIAMETER_M      0.125f
 #define WHEEL_CIRCUM_M        (3.1415926f * WHEEL_DIAMETER_M)
 
-/* Measured at the wheel output, including x4 timer decoding and 51:1 gearbox. */
+/*
+ * PM52-5288E-2440 DC24V, encoder 1000 lines, gear ratio 1/51
+ *
+ * 실측값:
+ * LEFT  : 약 203190 ticks / wheel rev
+ * RIGHT : 약 202795 ticks / wheel rev
+ */
 #define LEFT_COUNTS_PER_REV   203190.0f
 #define RIGHT_COUNTS_PER_REV  202795.0f
 
+/*
+ * ROS/DWA 속도 기준
+ *
+ * 예전 엔코더 모터 기준의 주행 속도는 유지하고,
+ * 새 PM52 모터는 같은 속도를 내기 위해 PWM만 약 2배로 올림.
+ */
 #define MAX_LINEAR_X_MPS      0.10f
 #define MAX_ANGULAR_Z_RADPS   0.20f
 
 #define PWM_MAX_CCR           49
 
 /*
- * STM 단독 테스트 기준
- * 전진 최대: 25
- * 후진 최대: 15
+ * MDDS30 PWM percent limits
+ *
+ * 기존: 전진 25 / 후진 15
+ * 변경: 전진 50 / 후진 30
  */
-#define FORWARD_PWM_LIMIT      25
-#define BACKWARD_PWM_LIMIT     15
+#define FORWARD_PWM_LIMIT      50
+#define BACKWARD_PWM_LIMIT     30
 
-#define PWM_OUTPUT_LIMIT       25
+#define PWM_OUTPUT_LIMIT       50
 
 /*
  * 기본 최소 구동 PWM
+ *
+ * 기존 12의 약 2배.
+ * 너무 튀면 22로 낮춰도 됨.
  */
-#define PWM_MIN_MOVE           12
+#define PWM_MIN_MOVE           24
 
 /*
  * 후진 전용 최소 PWM
  */
-#define LEFT_BWD_MIN_PWM       12
-#define RIGHT_BWD_MIN_PWM      12
+#define LEFT_BWD_MIN_PWM       24
+#define RIGHT_BWD_MIN_PWM      24
+
+/*
+ * 후진 회전 보정
+ *
+ * 후진 중 좌회전:
+ *   왼쪽 바퀴가 더 많이 후진
+ *   오른쪽 바퀴는 덜 후진 → 약 25 이하로 제한
+ *
+ * 후진 중 우회전:
+ *   오른쪽 바퀴가 더 많이 후진
+ *   왼쪽 바퀴는 덜 후진 → 약 25 이하로 제한
+ */
+#define REVERSE_TURN_SLOW_PWM  25
 
 #define CONTROL_PERIOD_MS      50
 #define CONTROL_DT_SEC         0.05f
 
 /*
- * 50ms마다 PWM 1씩 변화
- * 급격한 전류 상승 방지
+ * 기존 PWM_STEP 1의 약 2배.
+ * 전류 튐이 심하면 1로 낮춰 테스트.
  */
-#define PWM_STEP               1
-#define CMD_TIMEOUT_MS         500
+#define PWM_STEP               2
+#define CMD_TIMEOUT_MS         800
 
 /*
  * 전진/후진 출력 보정
  *
- * 기존 후진 TRIM 0.75는 후진 PWM 차이를 죽였기 때문에 제거.
- * 후진에서도 12~15 범위가 살아있도록 1.00으로 변경.
+ * 오른쪽/왼쪽 모터 힘 차이가 있으면 여기서 0.95, 1.05 식으로 보정.
  */
 #define LEFT_FWD_TRIM          1.00f
 #define RIGHT_FWD_TRIM         1.00f
 #define LEFT_BWD_TRIM          1.00f
 #define RIGHT_BWD_TRIM         1.00f
 
-/* PWM-percent correction per m/s of wheel-speed error. */
-#define PID_KP                 40.0f
+/*
+ * Encoder feedback limited P correction
+ *
+ * PWM 스케일을 2배로 키웠기 때문에 기존 KP 40 → 80.
+ * 보정량도 ±3 → ±6.
+ */
+#define PID_KP                 80.0f
 #define PID_KI                 0.0f
 #define PID_KD                 0.0f
 
-#define PID_CORRECTION_LIMIT   3
+#define PID_CORRECTION_LIMIT   6
 #define PID_INTEGRAL_LIMIT     3.0f
 
+/*
+ * Encoder direction sign
+ *
+ * 전진 방향으로 바퀴를 돌렸을 때 tick이 감소하면 부호를 바꾸면 됨.
+ */
 #define LEFT_ENCODER_SIGN      1
 #define RIGHT_ENCODER_SIGN    -1
 
+/*
+ * PWM/DIR mode wiring
+ *
+ * RIGHT PWM: PA6 / TIM3_CH1 -> MDDS30 AN2
+ * LEFT  PWM: PA7 / TIM3_CH2 -> MDDS30 AN1
+ * RIGHT DIR: PB0            -> MDDS30 IN2
+ * LEFT  DIR: PB1            -> MDDS30 IN1
+ */
 #define RIGHT_PWM_CHANNEL      TIM_CHANNEL_1   // PA6
 #define LEFT_PWM_CHANNEL       TIM_CHANNEL_2   // PA7
 
@@ -153,6 +199,7 @@ static void MX_TIM2_Init(void);
 static void MX_TIM4_Init(void);
 
 /* USER CODE BEGIN PFP */
+
 static float clamp_float(float value, float min_value, float max_value);
 static float abs_float(float value);
 static int abs_int(int value);
@@ -168,29 +215,42 @@ static void right_dir(uint8_t rev);
 static void left_dir(uint8_t rev);
 
 static int speed_to_signed_pwm(float target_mps);
+
 static int limited_pid_correction(float target_mps,
                                   float measured_mps,
                                   float *integral,
-                                  float *prev_error);
+                                  float *prev_error,
+                                  float dt_sec);
+
+static void apply_reverse_turn_shape(void);
 
 static void set_left_motor_signed(int signed_pwm);
 static void set_right_motor_signed(int signed_pwm);
 static void motors_stop(void);
-static void apply_encoder_feedback_outputs(void);
+static void apply_encoder_feedback_outputs(float dt_sec);
 
-static void UpdateEncoderTicksAndSpeed(void);
+static void UpdateEncoderTicksAndSpeed(float dt_sec);
 static void PublishEncoderTicks(void);
 static void reset_pid(void);
 
 void cmdVelCallback(const geometry_msgs::Twist& cmd_msg);
+
 /* USER CODE END PFP */
 
 /* USER CODE BEGIN 0 */
 
 static float clamp_float(float value, float min_value, float max_value)
 {
-  if (value > max_value) return max_value;
-  if (value < min_value) return min_value;
+  if (value > max_value)
+  {
+    return max_value;
+  }
+
+  if (value < min_value)
+  {
+    return min_value;
+  }
+
   return value;
 }
 
@@ -206,8 +266,16 @@ static int abs_int(int value)
 
 static int clamp_int(int value, int min_value, int max_value)
 {
-  if (value > max_value) return max_value;
-  if (value < min_value) return min_value;
+  if (value > max_value)
+  {
+    return max_value;
+  }
+
+  if (value < min_value)
+  {
+    return min_value;
+  }
+
   return value;
 }
 
@@ -231,7 +299,10 @@ static int approach_int(int current, int target, int step)
  */
 static uint32_t pct_to_ccr(uint8_t pct)
 {
-  if (pct > 100) pct = 100;
+  if (pct > 100)
+  {
+    pct = 100;
+  }
 
   uint32_t arr = __HAL_TIM_GET_AUTORELOAD(&htim3);
   return (arr + 1U) * pct / 100U;
@@ -268,8 +339,8 @@ static void left_dir(uint8_t rev)
 /*
  * target_mps -> signed PWM
  *
- * 전진: 12 ~ 25
- * 후진: 12 ~ 15
+ * 전진: 24 ~ 50
+ * 후진: 24 ~ 30
  */
 static int speed_to_signed_pwm(float target_mps)
 {
@@ -304,13 +375,14 @@ static int speed_to_signed_pwm(float target_mps)
 }
 
 /*
- * Limited encoder feedback correction. Float-to-int conversion is rounded;
- * truncation made the previous low gain produce zero correction in practice.
+ * Limited encoder feedback correction.
+ * Float-to-int conversion is rounded.
  */
 static int limited_pid_correction(float target_mps,
                                   float measured_mps,
                                   float *integral,
-                                  float *prev_error)
+                                  float *prev_error,
+                                  float dt_sec)
 {
   if (abs_float(target_mps) < 0.002f)
   {
@@ -319,14 +391,19 @@ static int limited_pid_correction(float target_mps,
     return 0;
   }
 
+  if (dt_sec <= 0.0f)
+  {
+    dt_sec = CONTROL_DT_SEC;
+  }
+
   float error = target_mps - measured_mps;
 
-  *integral += error * CONTROL_DT_SEC;
+  *integral += error * dt_sec;
   *integral = clamp_float(*integral,
                           -PID_INTEGRAL_LIMIT,
                           PID_INTEGRAL_LIMIT);
 
-  float derivative = (error - *prev_error) / CONTROL_DT_SEC;
+  float derivative = (error - *prev_error) / dt_sec;
   *prev_error = error;
 
   float correction_f = PID_KP * error
@@ -345,20 +422,95 @@ static int limited_pid_correction(float target_mps,
 }
 
 /*
+ * 후진 회전 시 좌우 PWM 모양 보정
+ *
+ * ROS 기준:
+ *   angular_z > 0  -> 좌회전
+ *   angular_z < 0  -> 우회전
+ *
+ * 후진 + 좌회전:
+ *   left  = 더 많이 후진
+ *   right = 덜 후진, 약 25 이하
+ *
+ * 후진 + 우회전:
+ *   right = 더 많이 후진
+ *   left  = 덜 후진, 약 25 이하
+ */
+static void apply_reverse_turn_shape(void)
+{
+  if (cmd_linear_x > -0.002f)
+  {
+    return;
+  }
+
+  if (abs_float(cmd_angular_z) < 0.002f)
+  {
+    return;
+  }
+
+  if ((desired_left_pwm >= 0) || (desired_right_pwm >= 0))
+  {
+    return;
+  }
+
+  int left_abs = abs_int(desired_left_pwm);
+  int right_abs = abs_int(desired_right_pwm);
+
+  /*
+   * 후진 + 좌회전
+   * 왼쪽이 더 많이 후진, 오른쪽은 덜 후진
+   */
+  if (cmd_angular_z > 0.0f)
+  {
+    left_abs = clamp_int(left_abs,
+                         LEFT_BWD_MIN_PWM,
+                         BACKWARD_PWM_LIMIT);
+
+    right_abs = clamp_int(right_abs,
+                          RIGHT_BWD_MIN_PWM,
+                          REVERSE_TURN_SLOW_PWM);
+
+    if (left_abs < right_abs)
+    {
+      left_abs = right_abs;
+    }
+  }
+  /*
+   * 후진 + 우회전
+   * 오른쪽이 더 많이 후진, 왼쪽은 덜 후진
+   */
+  else
+  {
+    right_abs = clamp_int(right_abs,
+                          RIGHT_BWD_MIN_PWM,
+                          BACKWARD_PWM_LIMIT);
+
+    left_abs = clamp_int(left_abs,
+                         LEFT_BWD_MIN_PWM,
+                         REVERSE_TURN_SLOW_PWM);
+
+    if (right_abs < left_abs)
+    {
+      right_abs = left_abs;
+    }
+  }
+
+  desired_left_pwm = -left_abs;
+  desired_right_pwm = -right_abs;
+}
+
+/*
  * 왼쪽 모터 출력
  */
 static void set_left_motor_signed(int signed_pwm)
 {
   int pwm_abs = abs_int(signed_pwm);
 
+  /* Minimum drive PWM is chosen before ramping; keep the ramp output intact. */
+
   if (signed_pwm > 0)
   {
     pwm_abs = (int)((float)pwm_abs * LEFT_FWD_TRIM);
-
-    if (pwm_abs > 0 && pwm_abs < PWM_MIN_MOVE)
-    {
-      pwm_abs = PWM_MIN_MOVE;
-    }
 
     pwm_abs = clamp_int(pwm_abs, 0, FORWARD_PWM_LIMIT);
     left_dir(0);
@@ -366,11 +518,6 @@ static void set_left_motor_signed(int signed_pwm)
   else if (signed_pwm < 0)
   {
     pwm_abs = (int)((float)pwm_abs * LEFT_BWD_TRIM);
-
-    if (pwm_abs > 0 && pwm_abs < LEFT_BWD_MIN_PWM)
-    {
-      pwm_abs = LEFT_BWD_MIN_PWM;
-    }
 
     pwm_abs = clamp_int(pwm_abs, 0, BACKWARD_PWM_LIMIT);
     left_dir(1);
@@ -390,14 +537,11 @@ static void set_right_motor_signed(int signed_pwm)
 {
   int pwm_abs = abs_int(signed_pwm);
 
+  /* Minimum drive PWM is chosen before ramping; keep the ramp output intact. */
+
   if (signed_pwm > 0)
   {
     pwm_abs = (int)((float)pwm_abs * RIGHT_FWD_TRIM);
-
-    if (pwm_abs > 0 && pwm_abs < PWM_MIN_MOVE)
-    {
-      pwm_abs = PWM_MIN_MOVE;
-    }
 
     pwm_abs = clamp_int(pwm_abs, 0, FORWARD_PWM_LIMIT);
     right_dir(0);
@@ -405,11 +549,6 @@ static void set_right_motor_signed(int signed_pwm)
   else if (signed_pwm < 0)
   {
     pwm_abs = (int)((float)pwm_abs * RIGHT_BWD_TRIM);
-
-    if (pwm_abs > 0 && pwm_abs < RIGHT_BWD_MIN_PWM)
-    {
-      pwm_abs = RIGHT_BWD_MIN_PWM;
-    }
 
     pwm_abs = clamp_int(pwm_abs, 0, BACKWARD_PWM_LIMIT);
     right_dir(1);
@@ -448,7 +587,7 @@ static void motors_stop(void)
   set_right_pwm_pct(0);
 }
 
-static void apply_encoder_feedback_outputs(void)
+static void apply_encoder_feedback_outputs(float dt_sec)
 {
   if (HAL_GetTick() - last_cmd_time > CMD_TIMEOUT_MS)
   {
@@ -462,15 +601,22 @@ static void apply_encoder_feedback_outputs(void)
   int left_corr = limited_pid_correction(target_left_mps,
                                          measured_left_mps,
                                          &left_integral,
-                                         &left_prev_error);
+                                         &left_prev_error,
+                                         dt_sec);
 
   int right_corr = limited_pid_correction(target_right_mps,
                                           measured_right_mps,
                                           &right_integral,
-                                          &right_prev_error);
+                                          &right_prev_error,
+                                          dt_sec);
 
   desired_left_pwm = base_left_pwm + left_corr;
   desired_right_pwm = base_right_pwm + right_corr;
+
+  /*
+   * 후진 회전 보정
+   */
+  apply_reverse_turn_shape();
 
   if (desired_left_pwm > 0)
   {
@@ -510,7 +656,7 @@ static void apply_encoder_feedback_outputs(void)
   set_right_motor_signed(current_right_pwm);
 }
 
-static void UpdateEncoderTicksAndSpeed(void)
+static void UpdateEncoderTicksAndSpeed(float dt_sec)
 {
   int16_t rawL = (int16_t)__HAL_TIM_GET_COUNTER(&htim2);
   int16_t rawR = (int16_t)__HAL_TIM_GET_COUNTER(&htim4);
@@ -527,11 +673,16 @@ static void UpdateEncoderTicksAndSpeed(void)
   posL += dL;
   posR += dR;
 
+  if (dt_sec <= 0.0f)
+  {
+    dt_sec = CONTROL_DT_SEC;
+  }
+
   float left_rev = ((float)dL) / LEFT_COUNTS_PER_REV;
   float right_rev = ((float)dR) / RIGHT_COUNTS_PER_REV;
 
-  measured_left_mps = (left_rev * WHEEL_CIRCUM_M) / CONTROL_DT_SEC;
-  measured_right_mps = (right_rev * WHEEL_CIRCUM_M) / CONTROL_DT_SEC;
+  measured_left_mps = (left_rev * WHEEL_CIRCUM_M) / dt_sec;
+  measured_right_mps = (right_rev * WHEEL_CIRCUM_M) / dt_sec;
 }
 
 static void PublishEncoderTicks(void)
@@ -557,11 +708,20 @@ void cmdVelCallback(const geometry_msgs::Twist& cmd_msg)
   target_left_mps  = linear_x - angular_z * WHEEL_BASE_M / 2.0f;
   target_right_mps = linear_x + angular_z * WHEEL_BASE_M / 2.0f;
 
-  target_left_mps =
-      clamp_float(target_left_mps, -MAX_LINEAR_X_MPS, MAX_LINEAR_X_MPS);
+  float max_wheel_mps = abs_float(target_left_mps);
 
-  target_right_mps =
-      clamp_float(target_right_mps, -MAX_LINEAR_X_MPS, MAX_LINEAR_X_MPS);
+  if (abs_float(target_right_mps) > max_wheel_mps)
+  {
+    max_wheel_mps = abs_float(target_right_mps);
+  }
+
+  /* Preserve the commanded curvature when either wheel exceeds its limit. */
+  if (max_wheel_mps > MAX_LINEAR_X_MPS)
+  {
+    float scale = MAX_LINEAR_X_MPS / max_wheel_mps;
+    target_left_mps *= scale;
+    target_right_mps *= scale;
+  }
 
   last_cmd_time = HAL_GetTick();
 }
@@ -623,9 +783,9 @@ int main(void)
   nh.advertise(ticks_pub);
   nh.subscribe(cmd_sub);
 
-  nh.loginfo("STM32 ROS Motor Control Ready - 203190/202795 CPR");
+  nh.loginfo("STM32 ROS Motor Control Ready - PM52 PWM50 REV30 TURN25");
 
-  uint32_t last_control_time = 0;
+  uint32_t last_control_time = HAL_GetTick();
 
   /* USER CODE END 2 */
 
@@ -633,13 +793,17 @@ int main(void)
   {
     nh.spinOnce();
 
-    if (HAL_GetTick() - last_control_time >= CONTROL_PERIOD_MS)
-    {
-      last_control_time = HAL_GetTick();
+    uint32_t now = HAL_GetTick();
+    uint32_t elapsed_ms = now - last_control_time;
 
-      UpdateEncoderTicksAndSpeed();
+    if (elapsed_ms >= CONTROL_PERIOD_MS)
+    {
+      last_control_time = now;
+      float dt_sec = ((float)elapsed_ms) * 0.001f;
+
+      UpdateEncoderTicksAndSpeed(dt_sec);
       PublishEncoderTicks();
-      apply_encoder_feedback_outputs();
+      apply_encoder_feedback_outputs(dt_sec);
     }
   }
 }
@@ -659,6 +823,7 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI;
   RCC_OscInitStruct.HSIState = RCC_HSI_ON;
   RCC_OscInitStruct.HSICalibrationValue = RCC_HSICALIBRATION_DEFAULT;
+
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSI;
   RCC_OscInitStruct.PLL.PLLM = 8;
@@ -674,6 +839,7 @@ void SystemClock_Config(void)
 
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK | RCC_CLOCKTYPE_SYSCLK
                               | RCC_CLOCKTYPE_PCLK1 | RCC_CLOCKTYPE_PCLK2;
+
   RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
   RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
@@ -698,6 +864,7 @@ static void MX_TIM2_Init(void)
   htim2.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
 
   sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+
   sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
   sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
   sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
@@ -778,6 +945,7 @@ static void MX_TIM4_Init(void)
   htim4.Init.AutoReloadPreload = TIM_AUTORELOAD_PRELOAD_DISABLE;
 
   sConfig.EncoderMode = TIM_ENCODERMODE_TI12;
+
   sConfig.IC1Polarity = TIM_ICPOLARITY_RISING;
   sConfig.IC1Selection = TIM_ICSELECTION_DIRECTTI;
   sConfig.IC1Prescaler = TIM_ICPSC_DIV1;
