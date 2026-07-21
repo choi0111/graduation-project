@@ -2,7 +2,7 @@
 /**
   ******************************************************************************
   * @file           : main.cpp
-  * @brief          : ROS rosserial Open-Loop + Limited P Speed Correction
+  * @brief          : ROS rosserial motor control with encoder speed feedback
   ******************************************************************************
   */
 /* USER CODE END Header */
@@ -30,8 +30,9 @@ UART_HandleTypeDef huart2;
 #define WHEEL_DIAMETER_M      0.125f
 #define WHEEL_CIRCUM_M        (3.1415926f * WHEEL_DIAMETER_M)
 
-#define LEFT_COUNTS_PER_REV   3788.0f
-#define RIGHT_COUNTS_PER_REV  3691.0f
+/* Measured at the wheel output, including x4 timer decoding and 51:1 gearbox. */
+#define LEFT_COUNTS_PER_REV   203190.0f
+#define RIGHT_COUNTS_PER_REV  202795.0f
 
 #define MAX_LINEAR_X_MPS      0.10f
 #define MAX_ANGULAR_Z_RADPS   0.20f
@@ -80,28 +81,12 @@ UART_HandleTypeDef huart2;
 #define LEFT_BWD_TRIM          1.00f
 #define RIGHT_BWD_TRIM         1.00f
 
-/*
- * 전진 + 좌회전 보정
- *
- * STM 단독 테스트에서 전진 좌회전은 LEFT 12 / RIGHT 25가 적절했음.
- * ROS 계산상 왼쪽이 약 15 정도 나올 수 있으므로 0.80을 곱해 약 12로 맞춤.
- */
-#define FWD_LEFT_TURN_LEFT_TRIM      0.80f
-#define FWD_LEFT_TURN_LEFT_MIN_PWM   12
-
-/*
- * 후진 중 오른쪽 모터가 더 빨라져야 하는 상황 보정
- *
- * STM 단독 테스트에서 후진 좌회전은 LEFT 12 / RIGHT 14가 만족스러웠음.
- * 따라서 오른쪽 후진 fast 상황은 14까지만 제한.
- */
-#define REV_RIGHT_FAST_LIMIT         14
-
-#define PID_KP                 3.0f
+/* PWM-percent correction per m/s of wheel-speed error. */
+#define PID_KP                 40.0f
 #define PID_KI                 0.0f
 #define PID_KD                 0.0f
 
-#define PID_CORRECTION_LIMIT   1
+#define PID_CORRECTION_LIMIT   3
 #define PID_INTEGRAL_LIMIT     3.0f
 
 #define LEFT_ENCODER_SIGN      1
@@ -191,7 +176,7 @@ static int limited_pid_correction(float target_mps,
 static void set_left_motor_signed(int signed_pwm);
 static void set_right_motor_signed(int signed_pwm);
 static void motors_stop(void);
-static void apply_open_loop_limited_pid_outputs(void);
+static void apply_encoder_feedback_outputs(void);
 
 static void UpdateEncoderTicksAndSpeed(void);
 static void PublishEncoderTicks(void);
@@ -319,8 +304,8 @@ static int speed_to_signed_pwm(float target_mps)
 }
 
 /*
- * 제한 PID 보정
- * 현재는 P만 사용하고 보정량은 -1 ~ +1로 제한.
+ * Limited encoder feedback correction. Float-to-int conversion is rounded;
+ * truncation made the previous low gain produce zero correction in practice.
  */
 static int limited_pid_correction(float target_mps,
                                   float measured_mps,
@@ -348,7 +333,9 @@ static int limited_pid_correction(float target_mps,
                      + PID_KI * (*integral)
                      + PID_KD * derivative;
 
-  int correction = (int)correction_f;
+  int correction = (correction_f >= 0.0f)
+                 ? (int)(correction_f + 0.5f)
+                 : (int)(correction_f - 0.5f);
 
   correction = clamp_int(correction,
                          -PID_CORRECTION_LIMIT,
@@ -368,23 +355,9 @@ static void set_left_motor_signed(int signed_pwm)
   {
     pwm_abs = (int)((float)pwm_abs * LEFT_FWD_TRIM);
 
-    /*
-     * 전진+좌회전에서는 왼쪽을 약 12 근처로 유지하기 위해
-     * 좌회전 전용 최소 PWM을 사용.
-     */
-    if ((cmd_linear_x > 0.002f) && (cmd_angular_z > 0.002f))
+    if (pwm_abs > 0 && pwm_abs < PWM_MIN_MOVE)
     {
-      if (pwm_abs > 0 && pwm_abs < FWD_LEFT_TURN_LEFT_MIN_PWM)
-      {
-        pwm_abs = FWD_LEFT_TURN_LEFT_MIN_PWM;
-      }
-    }
-    else
-    {
-      if (pwm_abs > 0 && pwm_abs < PWM_MIN_MOVE)
-      {
-        pwm_abs = PWM_MIN_MOVE;
-      }
+      pwm_abs = PWM_MIN_MOVE;
     }
 
     pwm_abs = clamp_int(pwm_abs, 0, FORWARD_PWM_LIMIT);
@@ -475,7 +448,7 @@ static void motors_stop(void)
   set_right_pwm_pct(0);
 }
 
-static void apply_open_loop_limited_pid_outputs(void)
+static void apply_encoder_feedback_outputs(void)
 {
   if (HAL_GetTick() - last_cmd_time > CMD_TIMEOUT_MS)
   {
@@ -498,68 +471,6 @@ static void apply_open_loop_limited_pid_outputs(void)
 
   desired_left_pwm = base_left_pwm + left_corr;
   desired_right_pwm = base_right_pwm + right_corr;
-
-  /*
-   * 전진 + 좌회전 보정
-   *
-   * STM 단독 테스트의 LEFT 12 / RIGHT 25 느낌을 맞추기 위해
-   * 오른쪽은 직진 기준 PWM까지만 유지하고,
-   * 왼쪽은 trim을 적용해 낮춘다.
-   */
-  if ((cmd_linear_x > 0.002f) && (cmd_angular_z > 0.002f))
-  {
-    int straight_right_pwm = speed_to_signed_pwm(cmd_linear_x);
-
-    if (straight_right_pwm < 0)
-    {
-      straight_right_pwm = 0;
-    }
-
-    if (desired_right_pwm > straight_right_pwm)
-    {
-      desired_right_pwm = straight_right_pwm;
-    }
-
-    if (desired_left_pwm > 0)
-    {
-      desired_left_pwm = (int)((float)desired_left_pwm * FWD_LEFT_TURN_LEFT_TRIM);
-
-      if (desired_left_pwm > 0 && desired_left_pwm < FWD_LEFT_TURN_LEFT_MIN_PWM)
-      {
-        desired_left_pwm = FWD_LEFT_TURN_LEFT_MIN_PWM;
-      }
-    }
-  }
-
-  /*
-   * 후진 중 오른쪽 모터가 더 빨라지는 상황 보정
-   *
-   * 예: 후진 중 좌회전처럼 오른쪽 모터가 더 많이 돌아야 하는 경우
-   * 기존 ROS 계산은 오른쪽이 15까지 갈 수 있음.
-   * STM 단독 테스트에서 만족스러웠던 RIGHT 14에 맞춰 제한.
-   *
-   * 조건:
-   * - 왼쪽, 오른쪽 모두 후진
-   * - 오른쪽의 절댓값 PWM이 왼쪽보다 큼
-   */
-  if ((desired_left_pwm < 0) && (desired_right_pwm < 0))
-  {
-    int left_abs = abs_int(desired_left_pwm);
-    int right_abs = abs_int(desired_right_pwm);
-
-    if (right_abs > left_abs)
-    {
-      if (right_abs > REV_RIGHT_FAST_LIMIT)
-      {
-        desired_right_pwm = -REV_RIGHT_FAST_LIMIT;
-      }
-
-      if (left_abs > 0 && left_abs < LEFT_BWD_MIN_PWM)
-      {
-        desired_left_pwm = -LEFT_BWD_MIN_PWM;
-      }
-    }
-  }
 
   if (desired_left_pwm > 0)
   {
@@ -712,7 +623,7 @@ int main(void)
   nh.advertise(ticks_pub);
   nh.subscribe(cmd_sub);
 
-  nh.loginfo("STM32 ROS Motor Control Ready - STM PWM Tuned");
+  nh.loginfo("STM32 ROS Motor Control Ready - 203190/202795 CPR");
 
   uint32_t last_control_time = 0;
 
@@ -728,7 +639,7 @@ int main(void)
 
       UpdateEncoderTicksAndSpeed();
       PublishEncoderTicks();
-      apply_open_loop_limited_pid_outputs();
+      apply_encoder_feedback_outputs();
     }
   }
 }

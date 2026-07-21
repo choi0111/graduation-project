@@ -12,11 +12,21 @@ class OdomPublisher:
         rospy.init_node('odom_publisher')
 
         # STM32와 맞춘 틱 수치
-        self.left_ticks_per_rev = 3788.0
-        self.right_ticks_per_rev = 3691.0
+        self.left_ticks_per_rev = rospy.get_param('~left_ticks_per_rev', 203190.0)
+        self.right_ticks_per_rev = rospy.get_param('~right_ticks_per_rev', 202795.0)
 
-        self.wheel_radius = 0.125 / 2.0
-        self.wheel_base = 0.695
+        self.wheel_radius = rospy.get_param('~wheel_radius', 0.125 / 2.0)
+        self.wheel_base = rospy.get_param('~wheel_base', 0.695)
+
+        if self.left_ticks_per_rev <= 0.0 or self.right_ticks_per_rev <= 0.0:
+            raise ValueError("wheel ticks_per_rev must be positive")
+
+        rospy.loginfo(
+            "odom calibration: left=%.1f right=%.1f ticks/rev, radius=%.4f m, base=%.3f m",
+            self.left_ticks_per_rev,
+            self.right_ticks_per_rev,
+            self.wheel_radius,
+            self.wheel_base)
 
         self.left_ticks = 0
         self.right_ticks = 0
@@ -70,12 +80,8 @@ class OdomPublisher:
         delta_left_ticks = self.left_ticks - self.last_left_ticks
         delta_right_ticks = self.right_ticks - self.last_right_ticks
 
-        # 16-bit 타이머 오버플로우 방지
-        if delta_left_ticks > 32768: delta_left_ticks -= 65536
-        elif delta_left_ticks < -32768: delta_left_ticks += 65536
-        if delta_right_ticks > 32768: delta_right_ticks -= 65536
-        elif delta_right_ticks < -32768: delta_right_ticks += 65536
-
+        # STM32 already unwraps the 16-bit hardware counters into cumulative
+        # int32 wheel positions. Do not apply another 16-bit wrap correction.
         # 이동 거리 계산
         distance_left = (delta_left_ticks / self.left_ticks_per_rev) * (2 * math.pi * self.wheel_radius)
         distance_right = (delta_right_ticks / self.right_ticks_per_rev) * (2 * math.pi * self.wheel_radius)
@@ -84,8 +90,9 @@ class OdomPublisher:
         distance = (distance_right + distance_left) / 2.0
         d_th = (distance_right - distance_left) / self.wheel_base
 
-        delta_x = distance * math.cos(self.th)
-        delta_y = distance * math.sin(self.th)
+        heading_mid = self.th + d_th / 2.0
+        delta_x = distance * math.cos(heading_mid)
+        delta_y = distance * math.sin(heading_mid)
         delta_th = d_th
 
         self.x += delta_x

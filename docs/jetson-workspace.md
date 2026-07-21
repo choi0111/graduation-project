@@ -55,3 +55,18 @@ catkin_make
 source devel/setup.bash
 roslaunch magni_nav jetson_autodrive.launch
 ```
+
+## Encoder calibration
+
+The encoder-motor configuration uses the measured wheel-output counts below:
+
+```text
+left:  203190 ticks/rev
+right: 202795 ticks/rev
+```
+
+These values must remain identical in `stm/main.cpp` and
+`jetson/catkin_ws/src/magni_nav/src/odom_publisher.py`. After changing the STM
+firmware, rebuild and flash it in STM32CubeIDE. After changing the Jetson code,
+pull the repository and rebuild the catkin workspace before launching
+`autodrive`.
