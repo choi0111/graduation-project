@@ -1,45 +1,45 @@
 DWAPlannerROS:
   # Keep planner limits close to the STM32 motor controller limits.
-  max_vel_x: 0.10
+  max_vel_x: 0.08
   min_vel_x: 0.02
 
   max_vel_y: 0.0
   min_vel_y: 0.0
 
-  max_vel_trans: 0.10
+  max_vel_trans: 0.08
   min_vel_trans: 0.02
   trans_stopped_vel: 0.01
 
   # Limit spin speed so a bad initial heading does not immediately swing into a wall.
-  max_vel_theta: 0.08
-  min_vel_theta: 0.02
-  theta_stopped_vel: 0.02
+  max_vel_theta: 0.05
+  min_vel_theta: 0.01
+  theta_stopped_vel: 0.01
 
   # Conservative acceleration for the PWM ramp in the STM32 firmware.
-  acc_lim_x: 0.06
-  acc_lim_theta: 0.10
+  acc_lim_x: 0.04
+  acc_lim_theta: 0.08
   acc_lim_y: 0.0
 
   yaw_goal_tolerance: 3.14
   xy_goal_tolerance: 0.35
   latch_xy_goal_tolerance: true
 
-  sim_time: 1.2
+  sim_time: 1.5
   sim_granularity: 0.05
-  angular_sim_granularity: 0.10
-  vx_samples: 4
+  angular_sim_granularity: 0.05
+  vx_samples: 5
   vy_samples: 1
-  vtheta_samples: 5
+  vtheta_samples: 7
 
   # Follow the global plan strongly. The cost term only represents saved-map
   # walls, because the local costmap does not subscribe to /scan obstacles.
-  path_distance_bias: 48.0
-  goal_distance_bias: 8.0
-  occdist_scale: 0.08
-  forward_point_distance: 0.40
+  path_distance_bias: 64.0
+  goal_distance_bias: 6.0
+  occdist_scale: 0.20
+  forward_point_distance: 0.20
 
   stop_time_buffer: 0.3
-  scaling_speed: 0.08
+  scaling_speed: 0.06
   max_scaling_factor: 0.2
   oscillation_reset_dist: 0.10
   prune_plan: true
