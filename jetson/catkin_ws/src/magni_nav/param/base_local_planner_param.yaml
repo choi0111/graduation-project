@@ -1,6 +1,8 @@
 DWAPlannerROS:
   # Keep planner limits close to the STM32 motor controller limits.
-  max_vel_x: 0.08
+  # Slow the robot enough that it can bend toward an offset room pose before
+  # passing it.  At 0.08 m/s and 0.05 rad/s the minimum turn radius was 1.6 m.
+  max_vel_x: 0.06
   # Include zero so DWA can build a valid dynamic window from rest.  With the
   # 3 Hz controller and the old 0.04 m/s^2 limit, the first reachable speed
   # was below the old 0.02 m/s minimum, so straight trajectories were rejected
@@ -10,45 +12,47 @@ DWAPlannerROS:
   max_vel_y: 0.0
   min_vel_y: 0.0
 
-  max_vel_trans: 0.08
+  max_vel_trans: 0.06
   min_vel_trans: 0.0
   trans_stopped_vel: 0.01
 
-  # Limit spin speed so a bad initial heading does not immediately swing into a wall.
-  max_vel_theta: 0.05
+  # A 0.08 rad/s limit gives a 0.75 m turn radius at maximum translation while
+  # remaining well below the STM32 firmware's 0.20 rad/s clamp.
+  max_vel_theta: 0.08
   min_vel_theta: 0.0
   theta_stopped_vel: 0.01
 
   # At 3 Hz these limits expose reachable non-zero samples in the first DWA
   # cycle while the STM32 still applies its own PWM ramp.
-  acc_lim_x: 0.10
-  acc_lim_theta: 0.10
+  acc_lim_x: 0.08
+  acc_lim_theta: 0.12
   acc_lim_y: 0.0
 
   # Named destinations include a measured door-facing orientation.
   yaw_goal_tolerance: 0.20
-  xy_goal_tolerance: 0.35
+  # The 0.74 m-wide platform does not need centimeter-level center positioning.
+  xy_goal_tolerance: 0.45
   latch_xy_goal_tolerance: true
 
-  sim_time: 1.5
+  sim_time: 2.0
   sim_granularity: 0.05
   angular_sim_granularity: 0.05
   vx_samples: 7
   vy_samples: 1
-  vth_samples: 9
+  vth_samples: 11
 
   # Follow the global plan strongly. The cost term only represents saved-map
   # walls, because the local costmap does not subscribe to /scan obstacles.
-  path_distance_bias: 64.0
-  goal_distance_bias: 6.0
+  path_distance_bias: 32.0
+  goal_distance_bias: 24.0
   occdist_scale: 0.20
-  forward_point_distance: 0.20
-  twirling_scale: 5.0
+  forward_point_distance: 0.15
+  twirling_scale: 1.0
 
   stop_time_buffer: 0.3
-  # The physical robot does not grow at 0.08 m/s.  Dynamic scaling previously
+  # The physical robot footprint does not change with speed. Dynamic scaling previously
   # enlarged its already padded footprint by up to 20% in the corridor.
-  scaling_speed: 0.08
+  scaling_speed: 0.06
   max_scaling_factor: 0.0
   oscillation_reset_dist: 0.10
   prune_plan: true
