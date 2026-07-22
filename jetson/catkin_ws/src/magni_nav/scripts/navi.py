@@ -69,6 +69,10 @@ CENTER_POSITION_TOLERANCES = {
     u"544호": 0.60,
     u"545호": 0.60,
 }
+STAGING_LINE_ALONG_TOLERANCE = 0.25
+STAGING_LINE_CROSS_TOLERANCE = 0.75
+STAGING_LINE_MISS_STOP_TOLERANCE = 0.10
+GOAL_PROGRESS_LOG_INTERVAL = 1.0
 FIXED_APPROACH_SPEED = 0.05
 FIXED_APPROACH_TIMEOUT = 12.0
 NEXT_GOAL_BACKUP_DISTANCE = 0.50
@@ -276,20 +280,94 @@ class DeliveryNavigator(object):
             target_pose[0] - self.amcl_position[0],
             target_pose[1] - self.amcl_position[1])
 
-    def accept_position_goal(self, location_name, target_pose, tolerance):
+    def staging_line_errors(self, center_pose, room_pose):
+        if self.amcl_position is None:
+            return None
+
+        room_dx = room_pose[0] - center_pose[0]
+        room_dy = room_pose[1] - center_pose[1]
+        room_distance = math.hypot(room_dx, room_dy)
+        if room_distance < 0.05:
+            return None
+
+        room_normal_x = room_dx / room_distance
+        room_normal_y = room_dy / room_distance
+        corridor_x = -room_normal_y
+        corridor_y = room_normal_x
+        offset_x = self.amcl_position[0] - center_pose[0]
+        offset_y = self.amcl_position[1] - center_pose[1]
+
+        along_error = abs(offset_x * corridor_x + offset_y * corridor_y)
+        cross_error = abs(
+            offset_x * room_normal_x + offset_y * room_normal_y)
+        return along_error, cross_error
+
+    def evaluate_position_goal(self, location_name, target_pose, tolerance,
+                               staging_room_pose=None):
         if tolerance is None:
-            return False
+            return 0
         distance = self.distance_to_target(target_pose)
-        if distance is None or distance > tolerance:
-            return False
-        self.client.cancel_goal()
-        self.stop_robot()
-        print("[navi] arrived at {} (position {:.3f} m)".format(
-            console_text(location_name), distance))
-        return True
+        if distance is None:
+            return 0
+        if distance <= tolerance:
+            self.client.cancel_goal()
+            self.stop_robot()
+            print("[navi] arrived at {} (position {:.3f} m)".format(
+                console_text(location_name), distance))
+            return 1
+
+        if staging_room_pose is None:
+            return 0
+        line_errors = self.staging_line_errors(target_pose, staging_room_pose)
+        if line_errors is None:
+            return 0
+        along_error, cross_error = line_errors
+        if (along_error <= STAGING_LINE_ALONG_TOLERANCE and
+                cross_error <= STAGING_LINE_CROSS_TOLERANCE):
+            self.client.cancel_goal()
+            self.stop_robot()
+            print(
+                "[navi] arrived at {} (staging line: along {:.3f} m, "
+                "cross {:.3f} m)".format(
+                    console_text(location_name), along_error, cross_error))
+            return 1
+
+        if along_error <= STAGING_LINE_MISS_STOP_TOLERANCE:
+            self.client.cancel_goal()
+            self.stop_robot()
+            print(
+                "[navi] crossed {} too far from corridor center "
+                "(cross {:.3f} m at x {:.3f}, y {:.3f}); stopping for "
+                "waypoint calibration".format(
+                    console_text(location_name), cross_error,
+                    self.amcl_position[0], self.amcl_position[1]))
+            return -1
+        return 0
+
+    def log_goal_progress(self, location_name, target_pose,
+                          staging_room_pose=None):
+        distance = self.distance_to_target(target_pose)
+        if distance is None:
+            print("[navi] {} waiting for fresh /amcl_pose".format(
+                console_text(location_name)))
+            return
+        if staging_room_pose is None:
+            print("[navi] {} distance {:.3f} m".format(
+                console_text(location_name), distance))
+            return
+        line_errors = self.staging_line_errors(target_pose, staging_room_pose)
+        if line_errors is None:
+            return
+        along_error, cross_error = line_errors
+        print(
+            "[navi] {} distance {:.3f} m, staging along {:.3f} m, "
+            "cross {:.3f} m (x {:.3f}, y {:.3f})".format(
+                console_text(location_name), distance,
+                along_error, cross_error,
+                self.amcl_position[0], self.amcl_position[1]))
 
     def move_to_goal(self, location_name, target_pose=None,
-                     position_tolerance=None):
+                     position_tolerance=None, staging_room_pose=None):
         if target_pose is None and location_name not in locations:
             print("[navi] unknown location: {}".format(console_text(location_name)))
             return False
@@ -298,6 +376,7 @@ class DeliveryNavigator(object):
             target_pose = locations[location_name]
 
         print("\n[navi] moving to {}".format(console_text(location_name)))
+        last_progress_log = 0.0
         while not rospy.is_shutdown():
             if self.cancel_mission:
                 self.client.cancel_goal()
@@ -308,9 +387,13 @@ class DeliveryNavigator(object):
             if self.cancel_mission or rospy.is_shutdown():
                 return False
 
-            if self.accept_position_goal(
-                    location_name, target_pose, position_tolerance):
+            position_state = self.evaluate_position_goal(
+                location_name, target_pose, position_tolerance,
+                staging_room_pose)
+            if position_state > 0:
                 return True
+            if position_state < 0:
+                return False
 
             self.client.send_goal(self.build_goal(target_pose))
             while not rospy.is_shutdown():
@@ -323,9 +406,19 @@ class DeliveryNavigator(object):
                     self.stop_robot()
                     self.wait_while_paused()
                     break
-                if self.accept_position_goal(
-                        location_name, target_pose, position_tolerance):
+                now = time.time()
+                if (position_tolerance is not None and
+                        now - last_progress_log >= GOAL_PROGRESS_LOG_INTERVAL):
+                    self.log_goal_progress(
+                        location_name, target_pose, staging_room_pose)
+                    last_progress_log = now
+                position_state = self.evaluate_position_goal(
+                    location_name, target_pose, position_tolerance,
+                    staging_room_pose)
+                if position_state > 0:
                     return True
+                if position_state < 0:
+                    return False
                 if self.client.wait_for_result(rospy.Duration(0.2)):
                     state = self.client.get_state()
                     if state == GoalStatus.SUCCEEDED:
@@ -568,7 +661,8 @@ class DeliveryNavigator(object):
                     center_pose, locations[room_name])
             position_tolerance = CENTER_POSITION_TOLERANCES.get(room_name)
             if not self.move_to_goal(
-                    center_target, center_pose, position_tolerance):
+                    center_target, center_pose, position_tolerance,
+                    locations[room_name]):
                 print("[navi] center waypoint failed for {}; skipping final approach".format(console_text(room_name)))
                 return False
             self.stop_robot()
