@@ -63,6 +63,9 @@ FIXED_APPROACH_DISTANCES = {
 }
 FIXED_APPROACH_SPEED = 0.05
 FIXED_APPROACH_TIMEOUT = 12.0
+NEXT_GOAL_BACKUP_DISTANCE = 0.50
+NEXT_GOAL_BACKUP_SPEED = 0.05
+NEXT_GOAL_BACKUP_TIMEOUT = 18.0
 ODOM_WAIT_TIMEOUT = 3.0
 ODOM_STALE_TIMEOUT = 1.0
 AMCL_WAIT_TIMEOUT = 3.0
@@ -72,6 +75,9 @@ ALIGN_MIN_ANGULAR_SPEED = 0.025
 ALIGN_MAX_ANGULAR_SPEED = 0.06
 ALIGN_ANGULAR_KP = 0.8
 ALIGN_TIMEOUT = 12.0
+NEXT_GOAL_MIN_ANGULAR_SPEED = 0.03
+NEXT_GOAL_MAX_ANGULAR_SPEED = 0.08
+NEXT_GOAL_ALIGN_TIMEOUT = 50.0
 
 try:
     text_type = unicode
@@ -141,6 +147,7 @@ class DeliveryNavigator(object):
         self.odom_position = None
         self.odom_yaw = None
         self.last_odom_wall_time = None
+        self.amcl_position = None
         self.amcl_yaw = None
         self.last_amcl_wall_time = None
         cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
@@ -185,6 +192,8 @@ class DeliveryNavigator(object):
         self.last_odom_wall_time = time.time()
 
     def amcl_callback(self, msg):
+        position = msg.pose.pose.position
+        self.amcl_position = (position.x, position.y)
         self.amcl_yaw = quaternion_to_yaw(msg.pose.pose.orientation)
         self.last_amcl_wall_time = time.time()
 
@@ -308,7 +317,8 @@ class DeliveryNavigator(object):
         while not rospy.is_shutdown() and time.time() < deadline:
             if self.cancel_mission:
                 return False
-            if (self.amcl_yaw is not None and
+            if (self.amcl_position is not None and
+                    self.amcl_yaw is not None and
                     self.last_amcl_wall_time is not None and
                     time.time() - self.last_amcl_wall_time <= AMCL_STALE_TIMEOUT):
                 return True
@@ -316,28 +326,31 @@ class DeliveryNavigator(object):
             rospy.sleep(0.05)
         return False
 
-    def align_to_room(self, room_name, center_pose, room_pose):
+    def prepare_direct_alignment(self, context):
         self.client.cancel_all_goals()
         self.stop_robot()
         rospy.sleep(0.2)
 
         if not self.wait_for_fresh_odom(ODOM_WAIT_TIMEOUT):
-            rospy.logerr("Fresh /odom data is required for room alignment")
+            rospy.logerr("Fresh /odom data is required for %s", context)
             return False
         if not self.wait_for_fresh_localization(AMCL_WAIT_TIMEOUT):
-            rospy.logerr("Fresh /amcl_pose data is required for room alignment")
+            rospy.logerr("Fresh /amcl_pose data is required for %s", context)
             return False
+        return True
 
-        target_yaw = math.atan2(
-            room_pose[1] - center_pose[1],
-            room_pose[0] - center_pose[0])
+    def rotate_to_map_yaw(self, target_name, target_yaw, action_text,
+                          min_angular_speed=ALIGN_MIN_ANGULAR_SPEED,
+                          max_angular_speed=ALIGN_MAX_ANGULAR_SPEED,
+                          timeout=ALIGN_TIMEOUT):
         required_rotation = normalize_angle(target_yaw - self.amcl_yaw)
         start_odom_yaw = self.odom_yaw
         start_time = time.time()
         rate = rospy.Rate(20)
 
-        print("[navi] fine-aligning toward {} ({:.1f} deg remaining)".format(
-            console_text(room_name), math.degrees(required_rotation)))
+        print("[navi] {} {} ({:.1f} deg remaining)".format(
+            action_text, console_text(target_name),
+            math.degrees(required_rotation)))
 
         while not rospy.is_shutdown():
             if self.cancel_mission:
@@ -353,7 +366,7 @@ class DeliveryNavigator(object):
 
             if (self.odom_yaw is None or self.last_odom_wall_time is None or
                     time.time() - self.last_odom_wall_time > ODOM_STALE_TIMEOUT):
-                rospy.logerr("/odom stopped during room alignment")
+                rospy.logerr("/odom stopped during direct rotation")
                 self.stop_robot()
                 return False
 
@@ -361,20 +374,20 @@ class DeliveryNavigator(object):
             error = normalize_angle(required_rotation - rotated)
             if abs(error) <= ALIGN_YAW_TOLERANCE:
                 self.stop_robot()
-                print("[navi] room alignment complete (error {:.1f} deg)".format(
+                print("[navi] rotation complete (error {:.1f} deg)".format(
                     math.degrees(error)))
                 return True
 
-            if time.time() - start_time > ALIGN_TIMEOUT:
+            if time.time() - start_time > timeout:
                 rospy.logerr(
-                    "Room alignment timed out with %.1f deg remaining",
+                    "Direct rotation timed out with %.1f deg remaining",
                     math.degrees(error))
                 self.stop_robot()
                 return False
 
             angular_speed = ALIGN_ANGULAR_KP * abs(error)
-            angular_speed = min(ALIGN_MAX_ANGULAR_SPEED, angular_speed)
-            angular_speed = max(ALIGN_MIN_ANGULAR_SPEED, angular_speed)
+            angular_speed = min(max_angular_speed, angular_speed)
+            angular_speed = max(min_angular_speed, angular_speed)
             command = Twist()
             command.angular.z = math.copysign(angular_speed, error)
             cmd_vel_pub.publish(command)
@@ -383,13 +396,51 @@ class DeliveryNavigator(object):
         self.stop_robot()
         return False
 
-    def drive_forward_distance(self, room_name, distance):
+    def align_to_room(self, room_name, center_pose, room_pose):
+        if not self.prepare_direct_alignment("room alignment"):
+            return False
+
+        target_yaw = math.atan2(
+            room_pose[1] - center_pose[1],
+            room_pose[0] - center_pose[0])
+        return self.rotate_to_map_yaw(
+            room_name, target_yaw, "fine-aligning toward")
+
+    def navigation_target_for(self, room_name):
+        center_target = room_name + u"_중앙"
+        if center_target in locations:
+            return center_target
+        return room_name
+
+    def align_toward_destination(self, room_name):
+        if not self.prepare_direct_alignment("next-destination alignment"):
+            return False
+
+        target_name = self.navigation_target_for(room_name)
+        target_pose = locations[target_name]
+        current_x, current_y = self.amcl_position
+        delta_x = target_pose[0] - current_x
+        delta_y = target_pose[1] - current_y
+        if math.hypot(delta_x, delta_y) < 0.05:
+            self.stop_robot()
+            return True
+
+        target_yaw = math.atan2(delta_y, delta_x)
+        return self.rotate_to_map_yaw(
+            room_name,
+            target_yaw,
+            "turning toward next destination",
+            NEXT_GOAL_MIN_ANGULAR_SPEED,
+            NEXT_GOAL_MAX_ANGULAR_SPEED,
+            NEXT_GOAL_ALIGN_TIMEOUT)
+
+    def drive_straight_distance(self, description, distance, speed, timeout):
         self.client.cancel_all_goals()
         self.stop_robot()
         rospy.sleep(0.2)
 
         if not self.wait_for_fresh_odom(ODOM_WAIT_TIMEOUT):
-            rospy.logerr("Fresh /odom data is required for the fixed room approach")
+            rospy.logerr("Fresh /odom data is required for %s", description)
             self.stop_robot()
             return False
 
@@ -397,10 +448,9 @@ class DeliveryNavigator(object):
         start_time = time.time()
         rate = rospy.Rate(20)
         command = Twist()
-        command.linear.x = FIXED_APPROACH_SPEED
+        command.linear.x = speed
 
-        print("[navi] approaching {} by {:.2f} m".format(
-            console_text(room_name), distance))
+        print("[navi] {}: {:.2f} m".format(description, distance))
 
         while not rospy.is_shutdown():
             if self.cancel_mission:
@@ -416,7 +466,7 @@ class DeliveryNavigator(object):
 
             if (self.last_odom_wall_time is None or
                     time.time() - self.last_odom_wall_time > ODOM_STALE_TIMEOUT):
-                rospy.logerr("/odom stopped during the fixed room approach")
+                rospy.logerr("/odom stopped during %s", description)
                 self.stop_robot()
                 return False
 
@@ -424,13 +474,14 @@ class DeliveryNavigator(object):
             traveled = math.hypot(current_x - start_x, current_y - start_y)
             if traveled >= distance:
                 self.stop_robot()
-                print("[navi] fixed approach complete at {:.3f} m".format(traveled))
+                print("[navi] {} complete at {:.3f} m".format(
+                    description, traveled))
                 return True
 
-            if time.time() - start_time > FIXED_APPROACH_TIMEOUT:
+            if time.time() - start_time > timeout:
                 rospy.logerr(
-                    "Fixed approach timed out after %.3f m (target %.3f m)",
-                    traveled, distance)
+                    "%s timed out after %.3f m (target %.3f m)",
+                    description, traveled, distance)
                 self.stop_robot()
                 return False
 
@@ -439,6 +490,31 @@ class DeliveryNavigator(object):
 
         self.stop_robot()
         return False
+
+    def drive_forward_distance(self, room_name, distance):
+        description = "approaching {}".format(console_text(room_name))
+        return self.drive_straight_distance(
+            description,
+            distance,
+            FIXED_APPROACH_SPEED,
+            FIXED_APPROACH_TIMEOUT)
+
+    def backup_for_next_destination(self):
+        return self.drive_straight_distance(
+            "backing up before next destination",
+            NEXT_GOAL_BACKUP_DISTANCE,
+            -NEXT_GOAL_BACKUP_SPEED,
+            NEXT_GOAL_BACKUP_TIMEOUT)
+
+    def prepare_for_next_destination(self, room_name):
+        if not self.backup_for_next_destination():
+            return False
+        rospy.sleep(0.5)
+        if not self.align_toward_destination(room_name):
+            return False
+        self.stop_robot()
+        rospy.sleep(0.5)
+        return True
 
     def move_to_room(self, room_name):
         center_target = room_name + u"_중앙"
@@ -475,21 +551,6 @@ class DeliveryNavigator(object):
             return self.move_to_goal(room_name, final_pose)
         finally:
             self.set_xy_goal_tolerance(CENTER_XY_GOAL_TOLERANCE)
-
-    def backup_50cm(self):
-        print("\n[navi] backing up 50cm before next goal")
-        twist = Twist()
-        twist.linear.x = -0.15
-        rate = rospy.Rate(10)
-        for _ in range(35):
-            if rospy.is_shutdown() or self.cancel_mission:
-                break
-            self.wait_while_paused()
-            cmd_vel_pub.publish(twist)
-            rate.sleep()
-        self.stop_robot()
-        rospy.sleep(1.0)
-        print("[navi] backup complete")
 
     def wait_for_item(self, room_name, has_next):
         self.item_received = False
@@ -551,13 +612,22 @@ class DeliveryNavigator(object):
             if not self.wait_for_item(room, has_next):
                 return
             if has_next:
-                self.backup_50cm()
+                next_room = normalized_rooms[index + 1]
+                if not self.prepare_for_next_destination(next_room):
+                    self.stop_robot()
+                    self.publish_status("IDLE")
+                    return
 
         self.status_pub.publish("SCENARIO_9")
         rospy.sleep(3.0)
         if u"엘베" in locations:
+            if not self.prepare_for_next_destination(u"엘베"):
+                self.stop_robot()
+                self.publish_status("IDLE")
+                return
             self.publish_status("RETURNING")
-            self.move_to_room(u"엘베")
+            if not self.move_to_room(u"엘베"):
+                self.stop_robot()
         self.publish_status("IDLE")
 
     def command_callback(self, msg):
@@ -615,7 +685,7 @@ class DeliveryNavigator(object):
             print("[navi] no valid destinations")
             return
 
-        for room in normalized_rooms:
+        for index, room in enumerate(normalized_rooms):
             if rospy.is_shutdown() or self.cancel_mission:
                 return
 
@@ -631,6 +701,15 @@ class DeliveryNavigator(object):
             self.publish_status("ARRIVED:{}".format(self.current_target))
             self.stop_robot()
             rospy.sleep(3.0)
+
+            has_next = index < len(normalized_rooms) - 1
+            if has_next:
+                next_room = normalized_rooms[index + 1]
+                if not self.prepare_for_next_destination(next_room):
+                    self.stop_robot()
+                    self.publish_status("IDLE")
+                    print("[navi] failed to prepare for next destination")
+                    return
 
         self.publish_status("IDLE")
         print("\n[navi] delivery sequence complete")

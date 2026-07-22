@@ -40,9 +40,13 @@ rosrun magni_nav navi.py 544호
 ```
 
 Multiple CLI destinations are visited in order. The robot faces each stored
-destination orientation and waits three seconds before continuing. After the
-last destination, it remains stopped there. When a room has a stored `_중앙`
-pose, navigation uses it to align with the room before the short final approach:
+destination orientation and waits three seconds before continuing. Before the
+next destination, it reverses 0.50 m using `/odom`, rotates in place toward the
+next destination's corridor-center pose, and only then starts `move_base`.
+After the last CLI destination, it remains stopped there. LLM delivery uses the
+same transition before the next room and before the final elevator return. When
+a room has a stored `_중앙` pose, navigation uses it to align with the room
+before the short final approach:
 
 ```bash
 rosrun magni_nav navi.py "544호" "540호" "542호"
