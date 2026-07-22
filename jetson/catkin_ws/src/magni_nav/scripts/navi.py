@@ -61,6 +61,12 @@ FIXED_APPROACH_DISTANCES = {
     u"542호": 0.30,
     u"544호": 0.30,
 }
+# move_base can prune the final center-plan pose before completing its yaw
+# check. Accept the measured staging position here; navi performs the precise
+# room-facing rotation immediately afterward.
+CENTER_POSITION_TOLERANCES = {
+    u"544호": 0.60,
+}
 FIXED_APPROACH_SPEED = 0.05
 FIXED_APPROACH_TIMEOUT = 12.0
 NEXT_GOAL_BACKUP_DISTANCE = 0.50
@@ -259,7 +265,29 @@ class DeliveryNavigator(object):
             self.stop_robot()
             return False
 
-    def move_to_goal(self, location_name, target_pose=None):
+    def distance_to_target(self, target_pose):
+        if (self.amcl_position is None or
+                self.last_amcl_wall_time is None or
+                time.time() - self.last_amcl_wall_time > AMCL_STALE_TIMEOUT):
+            return None
+        return math.hypot(
+            target_pose[0] - self.amcl_position[0],
+            target_pose[1] - self.amcl_position[1])
+
+    def accept_position_goal(self, location_name, target_pose, tolerance):
+        if tolerance is None:
+            return False
+        distance = self.distance_to_target(target_pose)
+        if distance is None or distance > tolerance:
+            return False
+        self.client.cancel_goal()
+        self.stop_robot()
+        print("[navi] arrived at {} (position {:.3f} m)".format(
+            console_text(location_name), distance))
+        return True
+
+    def move_to_goal(self, location_name, target_pose=None,
+                     position_tolerance=None):
         if target_pose is None and location_name not in locations:
             print("[navi] unknown location: {}".format(console_text(location_name)))
             return False
@@ -278,6 +306,10 @@ class DeliveryNavigator(object):
             if self.cancel_mission or rospy.is_shutdown():
                 return False
 
+            if self.accept_position_goal(
+                    location_name, target_pose, position_tolerance):
+                return True
+
             self.client.send_goal(self.build_goal(target_pose))
             while not rospy.is_shutdown():
                 if self.cancel_mission:
@@ -289,6 +321,9 @@ class DeliveryNavigator(object):
                     self.stop_robot()
                     self.wait_while_paused()
                     break
+                if self.accept_position_goal(
+                        location_name, target_pose, position_tolerance):
+                    return True
                 if self.client.wait_for_result(rospy.Duration(0.2)):
                     state = self.client.get_state()
                     if state == GoalStatus.SUCCEEDED:
@@ -520,13 +555,17 @@ class DeliveryNavigator(object):
         center_target = room_name + u"_중앙"
         has_center_target = center_target in locations
         if has_center_target:
-            if not self.set_xy_goal_tolerance(CENTER_XY_GOAL_TOLERANCE):
+            center_tolerance = CENTER_POSITION_TOLERANCES.get(
+                room_name, CENTER_XY_GOAL_TOLERANCE)
+            if not self.set_xy_goal_tolerance(center_tolerance):
                 return False
             center_pose = locations[center_target]
             if room_name in FIXED_APPROACH_DISTANCES:
                 center_pose = self.center_pose_facing_room(
                     center_pose, locations[room_name])
-            if not self.move_to_goal(center_target, center_pose):
+            position_tolerance = CENTER_POSITION_TOLERANCES.get(room_name)
+            if not self.move_to_goal(
+                    center_target, center_pose, position_tolerance):
                 print("[navi] center waypoint failed for {}; skipping final approach".format(console_text(room_name)))
                 return False
             self.stop_robot()
