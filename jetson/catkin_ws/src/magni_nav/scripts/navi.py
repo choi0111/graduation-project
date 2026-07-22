@@ -7,7 +7,6 @@ import sys
 import json
 import threading
 import time
-import tf
 from actionlib_msgs.msg import GoalStatus
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from geometry_msgs.msg import Twist
@@ -47,7 +46,6 @@ locations = {
 }
 
 cmd_vel_pub = None
-tf_listener = None
 
 try:
     text_type = unicode
@@ -76,15 +74,6 @@ def console_text(value):
 locations = dict((as_text(key), value) for key, value in locations.items())
 
 
-def get_current_pose():
-    global tf_listener
-    try:
-        (trans, rot) = tf_listener.lookupTransform('/map', '/base_footprint', rospy.Time(0))
-        return (trans[0], trans[1], rot[2], rot[3])
-    except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
-        return None
-
-
 def normalize_room_name(value):
     if value is None:
         return None
@@ -107,13 +96,11 @@ def room_for_status(location_name):
 
 class DeliveryNavigator(object):
     def __init__(self):
-        global cmd_vel_pub, tf_listener
+        global cmd_vel_pub
         rospy.init_node('navi_cmd_node')
         cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         self.status_pub = rospy.Publisher('/robot_status', String, queue_size=10)
         self.command_sub = rospy.Subscriber('/llm_command', String, self.command_callback)
-        tf_listener = tf.TransformListener()
-
         self.client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
         self.mission_lock = threading.Lock()
         self.active_thread = None
@@ -173,15 +160,6 @@ class DeliveryNavigator(object):
         goal.target_pose.pose.orientation.z = z_ori
         goal.target_pose.pose.orientation.w = w_ori
         return goal
-
-    def capture_current_pose(self, timeout_sec=5.0):
-        deadline = time.time() + timeout_sec
-        while not rospy.is_shutdown() and time.time() < deadline:
-            pose = get_current_pose()
-            if pose is not None:
-                return pose
-            rospy.sleep(0.1)
-        return None
 
     def wait_while_paused(self):
         while self.paused and not rospy.is_shutdown():
@@ -376,15 +354,6 @@ class DeliveryNavigator(object):
             print("[navi] no valid destinations")
             return
 
-        start_pose = self.capture_current_pose()
-        if start_pose is None:
-            rospy.logerr("Cannot capture the start pose from map to base_footprint")
-            return
-
-        rospy.loginfo(
-            "Captured start pose: x=%.3f y=%.3f z=%.4f w=%.4f",
-            start_pose[0], start_pose[1], start_pose[2], start_pose[3])
-
         for room in normalized_rooms:
             if rospy.is_shutdown() or self.cancel_mission:
                 return
@@ -402,17 +371,8 @@ class DeliveryNavigator(object):
             self.stop_robot()
             rospy.sleep(3.0)
 
-        if rospy.is_shutdown() or self.cancel_mission:
-            return
-
-        self.publish_status("RETURNING")
-        if not self.move_to_goal("start", start_pose):
-            self.publish_status("IDLE")
-            print("[navi] failed to return to the captured start pose")
-            return
-
         self.publish_status("IDLE")
-        print("\n[navi] delivery sequence complete; returned to start")
+        print("\n[navi] delivery sequence complete")
 
     def run(self):
         input_goals = sys.argv[1:]

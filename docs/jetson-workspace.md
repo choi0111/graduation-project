@@ -40,8 +40,8 @@ rosrun magni_nav navi.py 544호
 ```
 
 Multiple CLI destinations are visited in order. The robot faces each stored
-destination orientation, waits three seconds, and returns to the pose captured
-when `navi.py` started:
+destination orientation and waits three seconds before continuing. After the
+last destination, it remains stopped there:
 
 ```bash
 rosrun magni_nav navi.py "544호" "540호" "542호"
