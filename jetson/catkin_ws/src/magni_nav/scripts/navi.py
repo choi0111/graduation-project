@@ -193,6 +193,17 @@ class DeliveryNavigator(object):
         goal.target_pose.pose.orientation.w = w_ori
         return goal
 
+    def center_pose_facing_room(self, center_pose, room_pose):
+        center_x, center_y = center_pose[0], center_pose[1]
+        room_x, room_y = room_pose[0], room_pose[1]
+        room_yaw = math.atan2(room_y - center_y, room_x - center_x)
+        return (
+            center_x,
+            center_y,
+            math.sin(room_yaw * 0.5),
+            math.cos(room_yaw * 0.5),
+        )
+
     def wait_while_paused(self):
         while self.paused and not rospy.is_shutdown():
             self.stop_robot()
@@ -326,7 +337,11 @@ class DeliveryNavigator(object):
         if has_center_target:
             if not self.set_xy_goal_tolerance(CENTER_XY_GOAL_TOLERANCE):
                 return False
-            if not self.move_to_goal(center_target):
+            center_pose = locations[center_target]
+            if room_name in FIXED_APPROACH_DISTANCES:
+                center_pose = self.center_pose_facing_room(
+                    center_pose, locations[room_name])
+            if not self.move_to_goal(center_target, center_pose):
                 print("[navi] center waypoint failed for {}; skipping final approach".format(console_text(room_name)))
                 return False
             self.stop_robot()
