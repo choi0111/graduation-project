@@ -48,9 +48,10 @@ pose, navigation uses it to align with the room before the short final approach:
 rosrun magni_nav navi.py "544호" "540호" "542호"
 ```
 
-The 542 room uses a large-platform stop pose 0.30 m from its center waypoint
-toward the original room pose. Its final approach temporarily tightens the DWA
-position tolerance from 0.60 m to 0.15 m, then restores the center tolerance.
+The original Magni destination database remains unchanged. For the larger
+platform, every final room pose is shifted backward by 0.30 m along its stored
+heading at runtime. A center-assisted final approach temporarily tightens the
+DWA position tolerance from 0.60 m to 0.15 m, then restores it.
 
 One-time setup on the MSI Ubuntu laptop:
 

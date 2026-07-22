@@ -7,6 +7,7 @@ import sys
 import json
 import threading
 import time
+import math
 from dynamic_reconfigure.client import Client as DynamicReconfigureClient
 from actionlib_msgs.msg import GoalStatus
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
@@ -19,8 +20,7 @@ from std_msgs.msg import String
 locations = {
     # --- 문 앞 최종 목적지 좌표 ---
     "544호":   (-12.944165, 7.656571, 0.454100, 0.890950),
-    # Large-platform stop pose: 0.30 m from 542 center toward the old room pose.
-    "542호":   (-5.805488, 1.968376, 0.458113, 0.888893),
+    "542호":   (-5.589854, 2.422153, 0.458113, 0.888893),
     "540호":   (1.640977, -2.824352, 0.450952, 0.892547),
     "545호":   (-8.620758, 2.768894, -0.887396, 0.461006),
     "543호":   (-1.434130, -2.615065, -0.886152, 0.463393),
@@ -50,9 +50,8 @@ locations = {
 cmd_vel_pub = None
 
 CENTER_XY_GOAL_TOLERANCE = 0.60
-FINAL_XY_GOAL_TOLERANCES = {
-    u"542호": 0.15,
-}
+FINAL_XY_GOAL_TOLERANCE = 0.15
+LARGE_ROBOT_GOAL_SETBACK_M = 0.30
 
 try:
     text_type = unicode
@@ -79,6 +78,14 @@ def console_text(value):
 
 
 locations = dict((as_text(key), value) for key, value in locations.items())
+
+
+def large_robot_stop_pose(target_pose):
+    x, y, z_ori, w_ori = target_pose
+    yaw = 2.0 * math.atan2(z_ori, w_ori)
+    x -= LARGE_ROBOT_GOAL_SETBACK_M * math.cos(yaw)
+    y -= LARGE_ROBOT_GOAL_SETBACK_M * math.sin(yaw)
+    return (x, y, z_ori, w_ori)
 
 
 def normalize_room_name(value):
@@ -230,7 +237,8 @@ class DeliveryNavigator(object):
 
     def move_to_room(self, room_name):
         center_target = room_name + u"_중앙"
-        if center_target in locations:
+        has_center_target = center_target in locations
+        if has_center_target:
             if not self.set_xy_goal_tolerance(CENTER_XY_GOAL_TOLERANCE):
                 return False
             if not self.move_to_goal(center_target):
@@ -239,15 +247,15 @@ class DeliveryNavigator(object):
             self.stop_robot()
             rospy.sleep(1.0)
 
-        final_tolerance = FINAL_XY_GOAL_TOLERANCES.get(room_name)
-        if final_tolerance is None:
-            return self.move_to_goal(room_name)
+        final_pose = large_robot_stop_pose(locations[room_name])
+        if not has_center_target:
+            return self.move_to_goal(room_name, final_pose)
 
-        if not self.set_xy_goal_tolerance(final_tolerance):
+        if not self.set_xy_goal_tolerance(FINAL_XY_GOAL_TOLERANCE):
             return False
 
         try:
-            return self.move_to_goal(room_name)
+            return self.move_to_goal(room_name, final_pose)
         finally:
             self.set_xy_goal_tolerance(CENTER_XY_GOAL_TOLERANCE)
 
