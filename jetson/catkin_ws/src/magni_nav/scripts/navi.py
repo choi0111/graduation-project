@@ -59,8 +59,8 @@ FINAL_XY_GOAL_TOLERANCE = 0.15
 # These rooms stop after a short encoder-odometry approach from the corridor.
 FIXED_APPROACH_DISTANCES = {
     u"542호": 0.30,
-    u"544호": 0.30,
-    u"545호": 0.25,
+    u"544호": 0.40,
+    u"545호": 0.40,
 }
 # move_base can prune the final center-plan pose before completing its yaw
 # check. Accept the measured staging position here; navi performs the precise
