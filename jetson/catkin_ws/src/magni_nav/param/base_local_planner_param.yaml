@@ -1,23 +1,28 @@
 DWAPlannerROS:
   # Keep planner limits close to the STM32 motor controller limits.
   max_vel_x: 0.08
-  min_vel_x: 0.02
+  # Include zero so DWA can build a valid dynamic window from rest.  With the
+  # 3 Hz controller and the old 0.04 m/s^2 limit, the first reachable speed
+  # was below the old 0.02 m/s minimum, so straight trajectories were rejected
+  # while curved trajectories could still pass the angular-speed threshold.
+  min_vel_x: 0.0
 
   max_vel_y: 0.0
   min_vel_y: 0.0
 
   max_vel_trans: 0.08
-  min_vel_trans: 0.02
+  min_vel_trans: 0.0
   trans_stopped_vel: 0.01
 
   # Limit spin speed so a bad initial heading does not immediately swing into a wall.
   max_vel_theta: 0.05
-  min_vel_theta: 0.01
+  min_vel_theta: 0.0
   theta_stopped_vel: 0.01
 
-  # Conservative acceleration for the PWM ramp in the STM32 firmware.
-  acc_lim_x: 0.04
-  acc_lim_theta: 0.08
+  # At 3 Hz these limits expose reachable non-zero samples in the first DWA
+  # cycle while the STM32 still applies its own PWM ramp.
+  acc_lim_x: 0.10
+  acc_lim_theta: 0.10
   acc_lim_y: 0.0
 
   yaw_goal_tolerance: 3.14
@@ -27,9 +32,9 @@ DWAPlannerROS:
   sim_time: 1.5
   sim_granularity: 0.05
   angular_sim_granularity: 0.05
-  vx_samples: 5
+  vx_samples: 7
   vy_samples: 1
-  vtheta_samples: 7
+  vth_samples: 9
 
   # Follow the global plan strongly. The cost term only represents saved-map
   # walls, because the local costmap does not subscribe to /scan obstacles.
@@ -37,10 +42,13 @@ DWAPlannerROS:
   goal_distance_bias: 6.0
   occdist_scale: 0.20
   forward_point_distance: 0.20
+  twirling_scale: 5.0
 
   stop_time_buffer: 0.3
-  scaling_speed: 0.06
-  max_scaling_factor: 0.2
+  # The physical robot does not grow at 0.08 m/s.  Dynamic scaling previously
+  # enlarged its already padded footprint by up to 20% in the corridor.
+  scaling_speed: 0.08
+  max_scaling_factor: 0.0
   oscillation_reset_dist: 0.10
   prune_plan: true
   meter_scoring: true
