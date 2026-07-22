@@ -48,9 +48,22 @@ pose, navigation uses it to align with the room before the short final approach:
 rosrun magni_nav navi.py "544호" "540호" "542호"
 ```
 
-The original Magni destination database remains unchanged. The separate
-`542호_대형` test destination is 0.30 m behind the original 542 room pose and
-shares its center waypoint. Run it with:
+The original Magni destination database remains unchanged. For `542호` and
+`544호`, the large platform now navigates to the stored corridor-center pose,
+finishes its room-facing rotation, and then drives forward 0.25 m at 0.05 m/s.
+The final distance is measured from `/odom`; it is not a time-based movement.
+If `/odom` stops updating, the approach aborts and publishes a stop command.
+
+Test the two fixed-distance approaches separately:
+
+```bash
+rosrun magni_nav navi.py 542호
+rosrun magni_nav navi.py 544호
+```
+
+The separate `542호_대형` test destination is still 0.30 m behind the original
+542 room pose and shares its center waypoint. It continues to use `move_base`
+for its final pose. Run it with:
 
 ```bash
 rosrun magni_nav navi.py 542호_대형

@@ -3,6 +3,7 @@
 
 import rospy
 import actionlib
+import math
 import sys
 import json
 import threading
@@ -11,6 +12,7 @@ from dynamic_reconfigure.client import Client as DynamicReconfigureClient
 from actionlib_msgs.msg import GoalStatus
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 
 # =========================================================
@@ -52,6 +54,17 @@ cmd_vel_pub = None
 
 CENTER_XY_GOAL_TOLERANCE = 1.00
 FINAL_XY_GOAL_TOLERANCE = 0.15
+
+# The large platform cannot safely use the old Magni room poses near the wall.
+# These rooms stop after a short encoder-odometry approach from the corridor.
+FIXED_APPROACH_DISTANCES = {
+    u"542호": 0.25,
+    u"544호": 0.25,
+}
+FIXED_APPROACH_SPEED = 0.05
+FIXED_APPROACH_TIMEOUT = 12.0
+ODOM_WAIT_TIMEOUT = 3.0
+ODOM_STALE_TIMEOUT = 1.0
 
 try:
     text_type = unicode
@@ -106,9 +119,12 @@ class DeliveryNavigator(object):
     def __init__(self):
         global cmd_vel_pub
         rospy.init_node('navi_cmd_node')
+        self.odom_position = None
+        self.last_odom_wall_time = None
         cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         self.status_pub = rospy.Publisher('/robot_status', String, queue_size=10)
         self.command_sub = rospy.Subscriber('/llm_command', String, self.command_callback)
+        self.odom_sub = rospy.Subscriber('/odom', Odometry, self.odom_callback)
         self.client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
         self.dwa_client = None
         self.mission_lock = threading.Lock()
@@ -137,6 +153,11 @@ class DeliveryNavigator(object):
     def stop_robot(self):
         twist = Twist()
         cmd_vel_pub.publish(twist)
+
+    def odom_callback(self, msg):
+        position = msg.pose.pose.position
+        self.odom_position = (position.x, position.y)
+        self.last_odom_wall_time = time.time()
 
     def shutdown(self):
         if self.shutdown_started:
@@ -229,6 +250,76 @@ class DeliveryNavigator(object):
                     print("[navi] failed to reach {}. state={}".format(console_text(location_name), state))
                     return False
 
+    def wait_for_fresh_odom(self, timeout):
+        deadline = time.time() + timeout
+        while not rospy.is_shutdown() and time.time() < deadline:
+            if self.cancel_mission:
+                return False
+            if (self.odom_position is not None and
+                    self.last_odom_wall_time is not None and
+                    time.time() - self.last_odom_wall_time <= ODOM_STALE_TIMEOUT):
+                return True
+            self.stop_robot()
+            rospy.sleep(0.05)
+        return False
+
+    def drive_forward_distance(self, room_name, distance):
+        self.client.cancel_all_goals()
+        self.stop_robot()
+        rospy.sleep(0.2)
+
+        if not self.wait_for_fresh_odom(ODOM_WAIT_TIMEOUT):
+            rospy.logerr("Fresh /odom data is required for the fixed room approach")
+            self.stop_robot()
+            return False
+
+        start_x, start_y = self.odom_position
+        start_time = time.time()
+        rate = rospy.Rate(20)
+        command = Twist()
+        command.linear.x = FIXED_APPROACH_SPEED
+
+        print("[navi] approaching {} by {:.2f} m".format(
+            console_text(room_name), distance))
+
+        while not rospy.is_shutdown():
+            if self.cancel_mission:
+                self.stop_robot()
+                return False
+
+            if self.paused:
+                pause_started = time.time()
+                self.stop_robot()
+                self.wait_while_paused()
+                start_time += time.time() - pause_started
+                continue
+
+            if (self.last_odom_wall_time is None or
+                    time.time() - self.last_odom_wall_time > ODOM_STALE_TIMEOUT):
+                rospy.logerr("/odom stopped during the fixed room approach")
+                self.stop_robot()
+                return False
+
+            current_x, current_y = self.odom_position
+            traveled = math.hypot(current_x - start_x, current_y - start_y)
+            if traveled >= distance:
+                self.stop_robot()
+                print("[navi] fixed approach complete at {:.3f} m".format(traveled))
+                return True
+
+            if time.time() - start_time > FIXED_APPROACH_TIMEOUT:
+                rospy.logerr(
+                    "Fixed approach timed out after %.3f m (target %.3f m)",
+                    traveled, distance)
+                self.stop_robot()
+                return False
+
+            cmd_vel_pub.publish(command)
+            rate.sleep()
+
+        self.stop_robot()
+        return False
+
     def move_to_room(self, room_name):
         center_target = room_name + u"_중앙"
         has_center_target = center_target in locations
@@ -240,6 +331,10 @@ class DeliveryNavigator(object):
                 return False
             self.stop_robot()
             rospy.sleep(1.0)
+
+        if room_name in FIXED_APPROACH_DISTANCES:
+            return self.drive_forward_distance(
+                room_name, FIXED_APPROACH_DISTANCES[room_name])
 
         final_pose = locations[room_name]
         if not has_center_target:
