@@ -13,10 +13,27 @@ export ROS_MASTER_URI="http://${JETSON_IP}:11311"
 export ROS_IP="${MSI_IP}"
 unset ROS_HOSTNAME
 
-source /opt/ros/melodic/setup.bash
-if [[ -f "${CATKIN_WS}/devel/setup.bash" ]]; then
-  source "${CATKIN_WS}/devel/setup.bash"
+ROS_SETUP=""
+if [[ -n "${ROS_DISTRO:-}" && -f "/opt/ros/${ROS_DISTRO}/setup.bash" ]]; then
+  ROS_SETUP="/opt/ros/${ROS_DISTRO}/setup.bash"
+else
+  for distro in noetic melodic; do
+    if [[ -f "/opt/ros/${distro}/setup.bash" ]]; then
+      ROS_SETUP="/opt/ros/${distro}/setup.bash"
+      break
+    fi
+  done
 fi
+
+if [[ -z "${ROS_SETUP}" ]]; then
+  echo "rviz_nav: no supported ROS installation found under /opt/ros." >&2
+  echo "rviz_nav: run: ls /opt/ros" >&2
+  exit 1
+fi
+
+# RViz only consumes standard ROS messages, so the MSI must not source a
+# Jetson-built catkin devel space from a different ROS distribution.
+source "${ROS_SETUP}"
 
 if ! hostname -I | tr ' ' '\n' | grep -Fxq "${MSI_IP}"; then
   echo "rviz_nav: this laptop does not currently own ${MSI_IP}." >&2
@@ -52,6 +69,6 @@ if [[ ! -f "${RVIZ_CONFIG}" ]]; then
   exit 1
 fi
 
-echo "rviz_nav: master=${ROS_MASTER_URI} laptop=${ROS_IP}"
+echo "rviz_nav: ros=${ROS_DISTRO:-unknown} master=${ROS_MASTER_URI} laptop=${ROS_IP}"
 echo "rviz_nav: set 2D Pose Estimate and wait for LaserScan status OK before sending a goal."
 exec rviz -d "${RVIZ_CONFIG}"
