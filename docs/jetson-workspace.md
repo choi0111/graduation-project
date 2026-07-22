@@ -51,7 +51,7 @@ rosrun magni_nav navi.py "544호" "540호" "542호"
 The original Magni destination database remains unchanged. For the larger
 platform, every final room pose is shifted backward by 0.30 m along its stored
 heading at runtime. A center-assisted final approach temporarily tightens the
-DWA position tolerance from 0.60 m to 0.15 m, then restores it.
+DWA position tolerance from 1.00 m to 0.15 m, then restores it.
 
 One-time setup on the MSI Ubuntu laptop:
 
