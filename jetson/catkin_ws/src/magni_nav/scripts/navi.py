@@ -59,16 +59,28 @@ FINAL_XY_GOAL_TOLERANCE = 0.15
 # These rooms stop after a short encoder-odometry approach from the corridor.
 FIXED_APPROACH_DISTANCES = {
     u"542호": 0.30,
+    u"542호_대형": 0.30,
     u"544호": 0.40,
     u"545호": 0.40,
+    u"543호": 0.40,
+    u"540호": 0.40,
+    u"541호": 0.40,
+    u"539호": 0.40,
 }
 # move_base can prune the final center-plan pose before completing its yaw
 # check. Accept the measured staging position here; navi performs the precise
 # room-facing rotation immediately afterward.
 CENTER_POSITION_TOLERANCES = {
-    u"544호": 0.60,
-    u"545호": 0.60,
+    u"542호": 0.90,
+    u"542호_대형": 0.90,
+    u"544호": 0.90,
+    u"545호": 0.90,
+    u"543호": 0.90,
+    u"540호": 0.90,
+    u"541호": 0.90,
+    u"539호": 0.90,
 }
+COARSE_GOAL_FALLBACK_MARGIN = 0.20
 STAGING_LINE_ALONG_TOLERANCE = 0.25
 STAGING_LINE_CROSS_TOLERANCE = 0.75
 STAGING_LINE_MISS_STOP_TOLERANCE = 0.10
@@ -425,6 +437,23 @@ class DeliveryNavigator(object):
                         self.stop_robot()
                         print("[navi] arrived at {}".format(console_text(location_name)))
                         return True
+                    if (position_tolerance is not None and
+                            state in (GoalStatus.ABORTED,
+                                      GoalStatus.REJECTED,
+                                      GoalStatus.LOST)):
+                        distance = self.distance_to_target(target_pose)
+                        fallback_tolerance = (
+                            position_tolerance + COARSE_GOAL_FALLBACK_MARGIN)
+                        if (distance is not None and
+                                distance <= fallback_tolerance):
+                            self.stop_robot()
+                            print(
+                                "[navi] accepting {} near staging point after "
+                                "planner failure (position {:.3f} m, limit "
+                                "{:.3f} m)".format(
+                                    console_text(location_name), distance,
+                                    fallback_tolerance))
+                            return True
                     self.stop_robot()
                     print("[navi] failed to reach {}. state={}".format(console_text(location_name), state))
                     return False
