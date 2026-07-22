@@ -39,11 +39,23 @@ Send a named navigation goal from another Jetson SSH terminal:
 rosrun magni_nav navi.py 544호
 ```
 
-Run RViz from the Ubuntu laptop terminal:
+One-time setup on the MSI Ubuntu laptop:
 
 ```bash
-rviz
+cd ~/graduation-project
+git pull --ff-only
+bash jetson/setup_msi_shell.sh
+source ~/.bashrc
 ```
+
+After `autodrive` is running on the Jetson, run RViz from the MSI terminal:
+
+```bash
+rviz_nav
+```
+
+`rviz_nav` fixes the ROS master and MSI addresses for this project and checks
+the navigation nodes and topics before opening the managed RViz configuration.
 
 Equivalent manual command:
 
