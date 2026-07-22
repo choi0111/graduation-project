@@ -25,7 +25,8 @@ DWAPlannerROS:
   acc_lim_theta: 0.10
   acc_lim_y: 0.0
 
-  yaw_goal_tolerance: 3.14
+  # Named destinations include a measured door-facing orientation.
+  yaw_goal_tolerance: 0.20
   xy_goal_tolerance: 0.35
   latch_xy_goal_tolerance: true
 

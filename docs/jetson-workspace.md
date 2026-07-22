@@ -39,6 +39,14 @@ Send a named navigation goal from another Jetson SSH terminal:
 rosrun magni_nav navi.py 544호
 ```
 
+Multiple CLI destinations are visited in order. The robot faces each stored
+destination orientation, waits three seconds, and returns to the pose captured
+when `navi.py` started:
+
+```bash
+rosrun magni_nav navi.py "544호" "540호" "542호"
+```
+
 One-time setup on the MSI Ubuntu laptop:
 
 ```bash

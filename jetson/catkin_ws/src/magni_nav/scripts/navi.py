@@ -76,11 +76,11 @@ def console_text(value):
 locations = dict((as_text(key), value) for key, value in locations.items())
 
 
-def get_current_yaw():
+def get_current_pose():
     global tf_listener
     try:
         (trans, rot) = tf_listener.lookupTransform('/map', '/base_footprint', rospy.Time(0))
-        return tf.transformations.euler_from_quaternion(rot)[2]
+        return (trans[0], trans[1], rot[2], rot[3])
     except (tf.LookupException, tf.ConnectivityException, tf.ExtrapolationException):
         return None
 
@@ -163,14 +163,8 @@ class DeliveryNavigator(object):
                 break
             time.sleep(0.05)
 
-    def build_goal(self, location_name):
-        x, y, z_ori, w_ori = locations[location_name]
-        current_yaw = get_current_yaw()
-        if current_yaw is not None:
-            q = tf.transformations.quaternion_from_euler(0, 0, current_yaw)
-            z_ori = q[2]
-            w_ori = q[3]
-
+    def build_goal(self, target_pose):
+        x, y, z_ori, w_ori = target_pose
         goal = MoveBaseGoal()
         goal.target_pose.header.frame_id = "map"
         goal.target_pose.header.stamp = rospy.Time.now()
@@ -180,15 +174,27 @@ class DeliveryNavigator(object):
         goal.target_pose.pose.orientation.w = w_ori
         return goal
 
+    def capture_current_pose(self, timeout_sec=5.0):
+        deadline = time.time() + timeout_sec
+        while not rospy.is_shutdown() and time.time() < deadline:
+            pose = get_current_pose()
+            if pose is not None:
+                return pose
+            rospy.sleep(0.1)
+        return None
+
     def wait_while_paused(self):
         while self.paused and not rospy.is_shutdown():
             self.stop_robot()
             rospy.sleep(0.2)
 
-    def move_to_goal(self, location_name):
-        if location_name not in locations:
+    def move_to_goal(self, location_name, target_pose=None):
+        if target_pose is None and location_name not in locations:
             print("[navi] unknown location: {}".format(console_text(location_name)))
             return False
+
+        if target_pose is None:
+            target_pose = locations[location_name]
 
         print("\n[navi] moving to {}".format(console_text(location_name)))
         while not rospy.is_shutdown():
@@ -201,7 +207,7 @@ class DeliveryNavigator(object):
             if self.cancel_mission or rospy.is_shutdown():
                 return False
 
-            self.client.send_goal(self.build_goal(location_name))
+            self.client.send_goal(self.build_goal(target_pose))
             while not rospy.is_shutdown():
                 if self.cancel_mission:
                     self.client.cancel_goal()
@@ -358,18 +364,55 @@ class DeliveryNavigator(object):
         self.active_thread.start()
 
     def run_cli_goals(self, goals):
-        for index, target in enumerate(goals):
-            if rospy.is_shutdown():
-                break
+        normalized_rooms = []
+        for target in goals:
             room = normalize_room_name(target)
             if room not in locations:
                 print("[navi] unknown location: {}".format(console_text(target)))
                 continue
+            normalized_rooms.append(room)
+
+        if not normalized_rooms:
+            print("[navi] no valid destinations")
+            return
+
+        start_pose = self.capture_current_pose()
+        if start_pose is None:
+            rospy.logerr("Cannot capture the start pose from map to base_footprint")
+            return
+
+        rospy.loginfo(
+            "Captured start pose: x=%.3f y=%.3f z=%.4f w=%.4f",
+            start_pose[0], start_pose[1], start_pose[2], start_pose[3])
+
+        for room in normalized_rooms:
+            if rospy.is_shutdown() or self.cancel_mission:
+                return
+
+            self.current_target = room_for_status(room)
+            self.publish_status("MOVING:{}".format(self.current_target))
             success = self.move_to_room(room)
-            if success and index < len(goals) - 1:
-                rospy.sleep(2.0)
-                self.backup_50cm()
-        print("\n[navi] delivery sequence complete")
+            if not success:
+                self.stop_robot()
+                self.publish_status("IDLE")
+                print("[navi] route stopped after a failed destination")
+                return
+
+            self.publish_status("ARRIVED:{}".format(self.current_target))
+            self.stop_robot()
+            rospy.sleep(3.0)
+
+        if rospy.is_shutdown() or self.cancel_mission:
+            return
+
+        self.publish_status("RETURNING")
+        if not self.move_to_goal("start", start_pose):
+            self.publish_status("IDLE")
+            print("[navi] failed to return to the captured start pose")
+            return
+
+        self.publish_status("IDLE")
+        print("\n[navi] delivery sequence complete; returned to start")
 
     def run(self):
         input_goals = sys.argv[1:]
