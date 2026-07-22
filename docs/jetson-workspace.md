@@ -50,8 +50,8 @@ rosrun magni_nav navi.py "544호" "540호" "542호"
 
 The original Magni destination database remains unchanged. For `542호` and
 `544호`, the large platform now navigates to the stored corridor-center pose,
-rotates toward the stored room coordinate, and then drives forward 0.25 m at
-0.05 m/s.
+rotates toward the stored room coordinate, performs a fine angular-only
+alignment to within 0.035 rad, and then drives forward 0.30 m at 0.05 m/s.
 The final distance is measured from `/odom`; it is not a time-based movement.
 If `/odom` stops updating, the approach aborts and publishes a stop command.
 

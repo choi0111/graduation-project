@@ -11,7 +11,7 @@ import time
 from dynamic_reconfigure.client import Client as DynamicReconfigureClient
 from actionlib_msgs.msg import GoalStatus
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 
@@ -58,13 +58,20 @@ FINAL_XY_GOAL_TOLERANCE = 0.15
 # The large platform cannot safely use the old Magni room poses near the wall.
 # These rooms stop after a short encoder-odometry approach from the corridor.
 FIXED_APPROACH_DISTANCES = {
-    u"542호": 0.25,
-    u"544호": 0.25,
+    u"542호": 0.30,
+    u"544호": 0.30,
 }
 FIXED_APPROACH_SPEED = 0.05
 FIXED_APPROACH_TIMEOUT = 12.0
 ODOM_WAIT_TIMEOUT = 3.0
 ODOM_STALE_TIMEOUT = 1.0
+AMCL_WAIT_TIMEOUT = 3.0
+AMCL_STALE_TIMEOUT = 2.0
+ALIGN_YAW_TOLERANCE = 0.035
+ALIGN_MIN_ANGULAR_SPEED = 0.025
+ALIGN_MAX_ANGULAR_SPEED = 0.06
+ALIGN_ANGULAR_KP = 0.8
+ALIGN_TIMEOUT = 12.0
 
 try:
     text_type = unicode
@@ -115,16 +122,33 @@ def room_for_status(location_name):
     return room
 
 
+def quaternion_to_yaw(orientation):
+    siny_cosp = 2.0 * (
+        orientation.w * orientation.z + orientation.x * orientation.y)
+    cosy_cosp = 1.0 - 2.0 * (
+        orientation.y * orientation.y + orientation.z * orientation.z)
+    return math.atan2(siny_cosp, cosy_cosp)
+
+
+def normalize_angle(angle):
+    return math.atan2(math.sin(angle), math.cos(angle))
+
+
 class DeliveryNavigator(object):
     def __init__(self):
         global cmd_vel_pub
         rospy.init_node('navi_cmd_node')
         self.odom_position = None
+        self.odom_yaw = None
         self.last_odom_wall_time = None
+        self.amcl_yaw = None
+        self.last_amcl_wall_time = None
         cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         self.status_pub = rospy.Publisher('/robot_status', String, queue_size=10)
         self.command_sub = rospy.Subscriber('/llm_command', String, self.command_callback)
         self.odom_sub = rospy.Subscriber('/odom', Odometry, self.odom_callback)
+        self.amcl_sub = rospy.Subscriber(
+            '/amcl_pose', PoseWithCovarianceStamped, self.amcl_callback)
         self.client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
         self.dwa_client = None
         self.mission_lock = threading.Lock()
@@ -157,7 +181,12 @@ class DeliveryNavigator(object):
     def odom_callback(self, msg):
         position = msg.pose.pose.position
         self.odom_position = (position.x, position.y)
+        self.odom_yaw = quaternion_to_yaw(msg.pose.pose.orientation)
         self.last_odom_wall_time = time.time()
+
+    def amcl_callback(self, msg):
+        self.amcl_yaw = quaternion_to_yaw(msg.pose.pose.orientation)
+        self.last_amcl_wall_time = time.time()
 
     def shutdown(self):
         if self.shutdown_started:
@@ -274,6 +303,86 @@ class DeliveryNavigator(object):
             rospy.sleep(0.05)
         return False
 
+    def wait_for_fresh_localization(self, timeout):
+        deadline = time.time() + timeout
+        while not rospy.is_shutdown() and time.time() < deadline:
+            if self.cancel_mission:
+                return False
+            if (self.amcl_yaw is not None and
+                    self.last_amcl_wall_time is not None and
+                    time.time() - self.last_amcl_wall_time <= AMCL_STALE_TIMEOUT):
+                return True
+            self.stop_robot()
+            rospy.sleep(0.05)
+        return False
+
+    def align_to_room(self, room_name, center_pose, room_pose):
+        self.client.cancel_all_goals()
+        self.stop_robot()
+        rospy.sleep(0.2)
+
+        if not self.wait_for_fresh_odom(ODOM_WAIT_TIMEOUT):
+            rospy.logerr("Fresh /odom data is required for room alignment")
+            return False
+        if not self.wait_for_fresh_localization(AMCL_WAIT_TIMEOUT):
+            rospy.logerr("Fresh /amcl_pose data is required for room alignment")
+            return False
+
+        target_yaw = math.atan2(
+            room_pose[1] - center_pose[1],
+            room_pose[0] - center_pose[0])
+        required_rotation = normalize_angle(target_yaw - self.amcl_yaw)
+        start_odom_yaw = self.odom_yaw
+        start_time = time.time()
+        rate = rospy.Rate(20)
+
+        print("[navi] fine-aligning toward {} ({:.1f} deg remaining)".format(
+            console_text(room_name), math.degrees(required_rotation)))
+
+        while not rospy.is_shutdown():
+            if self.cancel_mission:
+                self.stop_robot()
+                return False
+
+            if self.paused:
+                pause_started = time.time()
+                self.stop_robot()
+                self.wait_while_paused()
+                start_time += time.time() - pause_started
+                continue
+
+            if (self.odom_yaw is None or self.last_odom_wall_time is None or
+                    time.time() - self.last_odom_wall_time > ODOM_STALE_TIMEOUT):
+                rospy.logerr("/odom stopped during room alignment")
+                self.stop_robot()
+                return False
+
+            rotated = normalize_angle(self.odom_yaw - start_odom_yaw)
+            error = normalize_angle(required_rotation - rotated)
+            if abs(error) <= ALIGN_YAW_TOLERANCE:
+                self.stop_robot()
+                print("[navi] room alignment complete (error {:.1f} deg)".format(
+                    math.degrees(error)))
+                return True
+
+            if time.time() - start_time > ALIGN_TIMEOUT:
+                rospy.logerr(
+                    "Room alignment timed out with %.1f deg remaining",
+                    math.degrees(error))
+                self.stop_robot()
+                return False
+
+            angular_speed = ALIGN_ANGULAR_KP * abs(error)
+            angular_speed = min(ALIGN_MAX_ANGULAR_SPEED, angular_speed)
+            angular_speed = max(ALIGN_MIN_ANGULAR_SPEED, angular_speed)
+            command = Twist()
+            command.angular.z = math.copysign(angular_speed, error)
+            cmd_vel_pub.publish(command)
+            rate.sleep()
+
+        self.stop_robot()
+        return False
+
     def drive_forward_distance(self, room_name, distance):
         self.client.cancel_all_goals()
         self.stop_robot()
@@ -348,6 +457,10 @@ class DeliveryNavigator(object):
             rospy.sleep(1.0)
 
         if room_name in FIXED_APPROACH_DISTANCES:
+            if not self.align_to_room(
+                    room_name, locations[center_target], locations[room_name]):
+                return False
+            rospy.sleep(0.5)
             return self.drive_forward_distance(
                 room_name, FIXED_APPROACH_DISTANCES[room_name])
 
