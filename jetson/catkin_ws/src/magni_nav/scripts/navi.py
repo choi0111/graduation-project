@@ -6,6 +6,7 @@ import actionlib
 import sys
 import json
 import threading
+import time
 import tf
 from actionlib_msgs.msg import GoalStatus
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
@@ -121,6 +122,9 @@ class DeliveryNavigator(object):
         self.item_received = False
         self.current_state = "IDLE"
         self.current_target = ""
+        self.shutdown_started = False
+
+        rospy.on_shutdown(self.shutdown)
 
         rospy.sleep(1.0)
         print("[navi] waiting for move_base server...")
@@ -135,6 +139,29 @@ class DeliveryNavigator(object):
     def stop_robot(self):
         twist = Twist()
         cmd_vel_pub.publish(twist)
+
+    def shutdown(self):
+        if self.shutdown_started:
+            return
+
+        self.shutdown_started = True
+        self.cancel_mission = True
+        self.paused = False
+
+        try:
+            self.client.cancel_all_goals()
+        except Exception as exc:
+            rospy.logwarn("Failed to cancel move_base goals during shutdown: %s", exc)
+
+        # Keep publishing zero briefly so a final move_base command cannot win
+        # the race with goal cancellation and leave the STM32 moving.
+        zero_twist = Twist()
+        for _ in range(20):
+            try:
+                cmd_vel_pub.publish(zero_twist)
+            except Exception:
+                break
+            time.sleep(0.05)
 
     def build_goal(self, location_name):
         x, y, z_ori, w_ori = locations[location_name]
@@ -188,8 +215,10 @@ class DeliveryNavigator(object):
                 if self.client.wait_for_result(rospy.Duration(0.2)):
                     state = self.client.get_state()
                     if state == GoalStatus.SUCCEEDED:
+                        self.stop_robot()
                         print("[navi] arrived at {}".format(console_text(location_name)))
                         return True
+                    self.stop_robot()
                     print("[navi] failed to reach {}. state={}".format(console_text(location_name), state))
                     return False
 
