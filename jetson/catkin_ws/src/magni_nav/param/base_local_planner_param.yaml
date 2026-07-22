@@ -13,13 +13,16 @@ DWAPlannerROS:
   min_vel_y: 0.0
 
   max_vel_trans: 0.06
-  min_vel_trans: 0.0
+  # Reject effectively stationary trajectories. With both minimum translation
+  # and rotation set to zero, DWA could select a floating-point near-zero
+  # angular command forever while an active goal remained several metres away.
+  min_vel_trans: 0.015
   trans_stopped_vel: 0.01
 
   # A 0.08 rad/s limit gives a 0.75 m turn radius at maximum translation while
   # remaining well below the STM32 firmware's 0.20 rad/s clamp.
   max_vel_theta: 0.08
-  min_vel_theta: 0.0
+  min_vel_theta: 0.02
   theta_stopped_vel: 0.01
 
   # At 3 Hz these limits expose reachable non-zero samples in the first DWA
