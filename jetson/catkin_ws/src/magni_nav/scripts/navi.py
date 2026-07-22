@@ -207,6 +207,13 @@ class DeliveryNavigator(object):
                     return False
 
     def move_to_room(self, room_name):
+        center_target = room_name + u"_중앙"
+        if center_target in locations:
+            if not self.move_to_goal(center_target):
+                print("[navi] center waypoint failed for {}; skipping final approach".format(console_text(room_name)))
+                return False
+            self.stop_robot()
+            rospy.sleep(1.0)
         return self.move_to_goal(room_name)
 
     def backup_50cm(self):

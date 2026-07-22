@@ -41,8 +41,8 @@ rosrun magni_nav navi.py 544호
 
 Multiple CLI destinations are visited in order. The robot faces each stored
 destination orientation and waits three seconds before continuing. After the
-last destination, it remains stopped there. Navigation currently sends each
-room destination directly; the stored `_중앙` waypoints are not used:
+last destination, it remains stopped there. When a room has a stored `_중앙`
+pose, navigation uses it to align with the room before the short final approach:
 
 ```bash
 rosrun magni_nav navi.py "544호" "540호" "542호"
