@@ -7,6 +7,7 @@ import sys
 import json
 import threading
 import time
+from dynamic_reconfigure.client import Client as DynamicReconfigureClient
 from actionlib_msgs.msg import GoalStatus
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from geometry_msgs.msg import Twist
@@ -18,7 +19,8 @@ from std_msgs.msg import String
 locations = {
     # --- 문 앞 최종 목적지 좌표 ---
     "544호":   (-12.944165, 7.656571, 0.454100, 0.890950),
-    "542호":   (-5.589854, 2.422153, 0.458113, 0.888893),
+    # Large-platform stop pose: 0.30 m from 542 center toward the old room pose.
+    "542호":   (-5.805488, 1.968376, 0.458113, 0.888893),
     "540호":   (1.640977, -2.824352, 0.450952, 0.892547),
     "545호":   (-8.620758, 2.768894, -0.887396, 0.461006),
     "543호":   (-1.434130, -2.615065, -0.886152, 0.463393),
@@ -46,6 +48,11 @@ locations = {
 }
 
 cmd_vel_pub = None
+
+CENTER_XY_GOAL_TOLERANCE = 0.60
+FINAL_XY_GOAL_TOLERANCES = {
+    u"542호": 0.15,
+}
 
 try:
     text_type = unicode
@@ -102,6 +109,7 @@ class DeliveryNavigator(object):
         self.status_pub = rospy.Publisher('/robot_status', String, queue_size=10)
         self.command_sub = rospy.Subscriber('/llm_command', String, self.command_callback)
         self.client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
+        self.dwa_client = None
         self.mission_lock = threading.Lock()
         self.active_thread = None
         self.paused = False
@@ -116,6 +124,8 @@ class DeliveryNavigator(object):
         rospy.sleep(1.0)
         print("[navi] waiting for move_base server...")
         self.client.wait_for_server()
+        self.dwa_client = DynamicReconfigureClient(
+            '/move_base/DWAPlannerROS', timeout=5.0)
         self.publish_status("IDLE")
 
     def publish_status(self, status):
@@ -166,6 +176,18 @@ class DeliveryNavigator(object):
             self.stop_robot()
             rospy.sleep(0.2)
 
+    def set_xy_goal_tolerance(self, tolerance):
+        try:
+            self.dwa_client.update_configuration({
+                'xy_goal_tolerance': float(tolerance),
+            })
+            rospy.loginfo("DWA xy_goal_tolerance set to %.2f m", tolerance)
+            return True
+        except Exception as exc:
+            rospy.logerr("Failed to set DWA xy_goal_tolerance: %s", exc)
+            self.stop_robot()
+            return False
+
     def move_to_goal(self, location_name, target_pose=None):
         if target_pose is None and location_name not in locations:
             print("[navi] unknown location: {}".format(console_text(location_name)))
@@ -209,12 +231,25 @@ class DeliveryNavigator(object):
     def move_to_room(self, room_name):
         center_target = room_name + u"_중앙"
         if center_target in locations:
+            if not self.set_xy_goal_tolerance(CENTER_XY_GOAL_TOLERANCE):
+                return False
             if not self.move_to_goal(center_target):
                 print("[navi] center waypoint failed for {}; skipping final approach".format(console_text(room_name)))
                 return False
             self.stop_robot()
             rospy.sleep(1.0)
-        return self.move_to_goal(room_name)
+
+        final_tolerance = FINAL_XY_GOAL_TOLERANCES.get(room_name)
+        if final_tolerance is None:
+            return self.move_to_goal(room_name)
+
+        if not self.set_xy_goal_tolerance(final_tolerance):
+            return False
+
+        try:
+            return self.move_to_goal(room_name)
+        finally:
+            self.set_xy_goal_tolerance(CENTER_XY_GOAL_TOLERANCE)
 
     def backup_50cm(self):
         print("\n[navi] backing up 50cm before next goal")
