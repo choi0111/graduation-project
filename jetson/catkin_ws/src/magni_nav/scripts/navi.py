@@ -60,12 +60,14 @@ FINAL_XY_GOAL_TOLERANCE = 0.15
 FIXED_APPROACH_DISTANCES = {
     u"542호": 0.30,
     u"544호": 0.30,
+    u"545호": 0.25,
 }
 # move_base can prune the final center-plan pose before completing its yaw
 # check. Accept the measured staging position here; navi performs the precise
 # room-facing rotation immediately afterward.
 CENTER_POSITION_TOLERANCES = {
     u"544호": 0.60,
+    u"545호": 0.60,
 }
 FIXED_APPROACH_SPEED = 0.05
 FIXED_APPROACH_TIMEOUT = 12.0
@@ -431,13 +433,14 @@ class DeliveryNavigator(object):
         self.stop_robot()
         return False
 
-    def align_to_room(self, room_name, center_pose, room_pose):
+    def align_to_room(self, room_name, room_pose):
         if not self.prepare_direct_alignment("room alignment"):
             return False
 
+        current_x, current_y = self.amcl_position
         target_yaw = math.atan2(
-            room_pose[1] - center_pose[1],
-            room_pose[0] - center_pose[0])
+            room_pose[1] - current_y,
+            room_pose[0] - current_x)
         return self.rotate_to_map_yaw(
             room_name, target_yaw, "fine-aligning toward")
 
@@ -573,7 +576,7 @@ class DeliveryNavigator(object):
 
         if room_name in FIXED_APPROACH_DISTANCES:
             if not self.align_to_room(
-                    room_name, locations[center_target], locations[room_name]):
+                    room_name, locations[room_name]):
                 return False
             rospy.sleep(0.5)
             return self.drive_forward_distance(
