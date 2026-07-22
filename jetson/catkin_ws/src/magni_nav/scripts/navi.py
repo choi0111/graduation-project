@@ -7,7 +7,6 @@ import sys
 import json
 import threading
 import time
-import math
 from dynamic_reconfigure.client import Client as DynamicReconfigureClient
 from actionlib_msgs.msg import GoalStatus
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
@@ -21,6 +20,7 @@ locations = {
     # --- 문 앞 최종 목적지 좌표 ---
     "544호":   (-12.944165, 7.656571, 0.454100, 0.890950),
     "542호":   (-5.589854, 2.422153, 0.458113, 0.888893),
+    "542호_대형": (-5.763933, 2.177825, 0.458113, 0.888893),
     "540호":   (1.640977, -2.824352, 0.450952, 0.892547),
     "545호":   (-8.620758, 2.768894, -0.887396, 0.461006),
     "543호":   (-1.434130, -2.615065, -0.886152, 0.463393),
@@ -41,6 +41,7 @@ locations = {
     "544호_중앙": (-13.241020, 6.963121, 0.454100, 0.890950),
     "545호_중앙": (-8.185434, 3.287473, -0.887396, 0.461006),
     "542호_중앙": (-5.934249, 1.697414, 0.458113, 0.888893),
+    "542호_대형_중앙": (-5.934249, 1.697414, 0.458113, 0.888893),
     "543호_중앙": (-0.987668, -1.818605, -0.886152, 0.463393),
     "540호_중앙": (1.298922, -3.393200, 0.450952, 0.892547),
     "541호_중앙": (6.338689, -7.008862, 0.004209, 0.999991), 
@@ -51,7 +52,6 @@ cmd_vel_pub = None
 
 CENTER_XY_GOAL_TOLERANCE = 1.00
 FINAL_XY_GOAL_TOLERANCE = 0.15
-LARGE_ROBOT_GOAL_SETBACK_M = 0.30
 
 try:
     text_type = unicode
@@ -80,14 +80,6 @@ def console_text(value):
 locations = dict((as_text(key), value) for key, value in locations.items())
 
 
-def large_robot_stop_pose(target_pose):
-    x, y, z_ori, w_ori = target_pose
-    yaw = 2.0 * math.atan2(z_ori, w_ori)
-    x -= LARGE_ROBOT_GOAL_SETBACK_M * math.cos(yaw)
-    y -= LARGE_ROBOT_GOAL_SETBACK_M * math.sin(yaw)
-    return (x, y, z_ori, w_ori)
-
-
 def normalize_room_name(value):
     if value is None:
         return None
@@ -96,6 +88,8 @@ def normalize_room_name(value):
         return None
     if room in [u"엘베", u"엘리베이터", "elevator"]:
         return u"엘베"
+    if room in locations:
+        return room
     if room.endswith(u"호"):
         return room
     return room + u"호"
@@ -247,7 +241,7 @@ class DeliveryNavigator(object):
             self.stop_robot()
             rospy.sleep(1.0)
 
-        final_pose = large_robot_stop_pose(locations[room_name])
+        final_pose = locations[room_name]
         if not has_center_target:
             return self.move_to_goal(room_name, final_pose)
 
