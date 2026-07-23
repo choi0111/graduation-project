@@ -102,6 +102,7 @@ ALIGN_TIMEOUT = 30.0
 NEXT_GOAL_MIN_ANGULAR_SPEED = 0.03
 NEXT_GOAL_MAX_ANGULAR_SPEED = 0.08
 NEXT_GOAL_ALIGN_TIMEOUT = 50.0
+INITIAL_GOAL_BEHIND_ANGLE = math.pi * 0.5
 
 try:
     text_type = unicode
@@ -616,6 +617,36 @@ class DeliveryNavigator(object):
             NEXT_GOAL_MAX_ANGULAR_SPEED,
             NEXT_GOAL_ALIGN_TIMEOUT)
 
+    def align_first_destination_if_behind(self, room_name):
+        if not self.prepare_direct_alignment("initial-destination alignment"):
+            return False
+
+        target_name = self.navigation_target_for(room_name)
+        target_pose = locations[target_name]
+        current_x, current_y = self.amcl_position
+        delta_x = target_pose[0] - current_x
+        delta_y = target_pose[1] - current_y
+        if math.hypot(delta_x, delta_y) < 0.05:
+            self.stop_robot()
+            return True
+
+        target_yaw = math.atan2(delta_y, delta_x)
+        heading_error = normalize_angle(target_yaw - self.amcl_yaw)
+        if abs(heading_error) <= INITIAL_GOAL_BEHIND_ANGLE:
+            print(
+                "[navi] first destination is ahead ({:.1f} deg); "
+                "keeping current heading".format(math.degrees(heading_error)))
+            self.stop_robot()
+            return True
+
+        return self.rotate_to_map_yaw(
+            room_name,
+            target_yaw,
+            "turning in place toward first destination",
+            NEXT_GOAL_MIN_ANGULAR_SPEED,
+            NEXT_GOAL_MAX_ANGULAR_SPEED,
+            NEXT_GOAL_ALIGN_TIMEOUT)
+
     def drive_straight_distance(self, description, distance, speed, timeout):
         self.client.cancel_all_goals()
         self.stop_robot()
@@ -875,6 +906,10 @@ class DeliveryNavigator(object):
 
             self.current_target = room_for_status(room)
             self.publish_status("MOVING:{}".format(self.current_target))
+            if index == 0 and not self.align_first_destination_if_behind(room):
+                self.stop_robot()
+                self.publish_status("IDLE")
+                return
             success = self.move_to_room(room)
             if not success:
                 self.stop_robot()
