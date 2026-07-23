@@ -10,3 +10,8 @@ jetson/catkin_ws/.catkin_workspace
 *.log
 __pycache__/
 .catkin_tools/
+
+# Local credentials
+.env
+.env.*
+!.env.example

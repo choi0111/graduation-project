@@ -84,6 +84,15 @@ for required_file in "${REQUIRED_LLM_FILES[@]}"; do
   fi
 done
 
+if [ -z "${OPENAI_API_KEY:-}" ]; then
+  if [ ! -f "${LLM_DIR}/.env" ] ||
+     ! grep -Eq '^[[:space:]]*OPENAI_API_KEY[[:space:]]*=' "${LLM_DIR}/.env"; then
+    echo "robot_start: OPENAI_API_KEY is not set and ${LLM_DIR}/.env has no key." >&2
+    echo "Store the rotated key as OPENAI_API_KEY=... in ${LLM_DIR}/.env." >&2
+    exit 1
+  fi
+fi
+
 if [ -x "${LLM_DIR}/venv/bin/python3" ]; then
   LLM_PYTHON="${LLM_DIR}/venv/bin/python3"
 elif [ -x "${LLM_DIR}/.venv/bin/python3" ]; then

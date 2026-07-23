@@ -57,6 +57,23 @@ tts_module2.py
 `main_node.py` is not used. Runtime assets such as `silero_vad.onnx`,
 `sounds/`, and `.env` remain in the same LLM directory.
 
+Store the API key only in the Jetson's local `~/llm/.env` file:
+
+```bash
+cd ~/llm
+nano .env
+chmod 600 .env
+```
+
+The file contains one line:
+
+```text
+OPENAI_API_KEY=replace_with_a_new_key
+```
+
+Do not commit `.env`. `robot_start` directly uses `~/llm/venv/bin/python3`
+when it exists, so manually running `source venv/bin/activate` is unnecessary.
+
 Send a named navigation goal from another Jetson SSH terminal:
 
 ```bash
