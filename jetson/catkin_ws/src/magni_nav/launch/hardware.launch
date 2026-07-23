@@ -5,6 +5,9 @@
   </node>
 
   <node pkg="magni_nav" type="odom_publisher.py" name="odom_publisher" output="screen">
+    <param name="left_ticks_per_rev" value="203190.0" />
+    <param name="right_ticks_per_rev" value="202795.0" />
+    <param name="wheel_radius" value="0.0625" />
     <param name="wheel_base" value="0.725" />
   </node>
 
