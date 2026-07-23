@@ -16,6 +16,20 @@ bash jetson/setup_jetson_shell.sh
 source ~/.bashrc
 ```
 
+The setup keeps the old `~/catkin_ws` directory but removes its active
+`source` line from `~/.bashrc`. It also removes duplicate manual sourcing of
+the graduation-project workspace, comments out previous fixed ROS IP exports,
+and configures this Jetson-only runtime:
+
+```bash
+export ROS_MASTER_URI=http://localhost:11311
+unset ROS_IP
+unset ROS_HOSTNAME
+```
+
+This local mode is independent of the phone hotspot address. Reconfigure ROS
+networking before using RViz from a separate MSI laptop.
+
 Build and verify without hardware:
 
 ```bash

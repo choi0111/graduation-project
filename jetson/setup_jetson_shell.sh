@@ -12,21 +12,37 @@ MARKER_START="# >>> graduation-project jetson workspace >>>"
 MARKER_END="# <<< graduation-project jetson workspace <<<"
 
 TMP_BASHRC="$(mktemp)"
-if grep -Fq "${MARKER_START}" "${BASHRC}"; then
-  awk -v start="${MARKER_START}" -v end="${MARKER_END}" '
-    $0 == start {skip=1; next}
-    $0 == end {skip=0; next}
-    skip != 1 {print}
-  ' "${BASHRC}" > "${TMP_BASHRC}"
-else
-  cp "${BASHRC}" "${TMP_BASHRC}"
-fi
+awk -v start="${MARKER_START}" -v end="${MARKER_END}" '
+  $0 == start {skip=1; next}
+  $0 == end {skip=0; next}
+  skip == 1 {next}
+
+  /^[[:space:]]*source[[:space:]]+~\/catkin_ws\/devel\/setup\.bash[[:space:]]*$/ {
+    next
+  }
+  /^[[:space:]]*source[[:space:]]+~\/graduation-project\/jetson\/catkin_ws\/devel\/setup\.bash[[:space:]]*$/ {
+    next
+  }
+  /^[[:space:]]*export[[:space:]]+ROS_(MASTER_URI|IP|HOSTNAME)=/ {
+    print "# disabled for Jetson-local ROS: " $0
+    next
+  }
+  /^[[:space:]]*unset[[:space:]]+ROS_(IP|HOSTNAME)[[:space:]]*$/ {
+    print "# disabled for Jetson-local ROS: " $0
+    next
+  }
+
+  {print}
+' "${BASHRC}" > "${TMP_BASHRC}"
 
 {
   echo ""
   echo "${MARKER_START}"
   echo "export GRADUATION_PROJECT_DIR=\"${PROJECT_DIR}\""
   echo "export GRADUATION_PROJECT_CATKIN_WS=\"${CATKIN_WS}\""
+  echo "export ROS_MASTER_URI=http://localhost:11311"
+  echo "unset ROS_IP"
+  echo "unset ROS_HOSTNAME"
   echo "if [ -f \"${CATKIN_WS}/devel/setup.bash\" ]; then"
   echo "  source \"${CATKIN_WS}/devel/setup.bash\""
   echo "fi"
@@ -40,5 +56,6 @@ cat "${TMP_BASHRC}" > "${BASHRC}"
 rm -f "${TMP_BASHRC}"
 
 echo "Jetson shell configured for ${CATKIN_WS}"
+echo "ROS networking configured for local Jetson use (localhost)."
 echo "Open a new terminal or run: source ~/.bashrc"
 echo "After that, run: autodrive, dc_autodrive, or robot_start"
