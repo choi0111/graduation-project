@@ -5,6 +5,7 @@ PROJECT_DIR="${HOME}/graduation-project"
 CATKIN_WS="${PROJECT_DIR}/jetson/catkin_ws"
 RUN_SCRIPT="${PROJECT_DIR}/jetson/run_autodrive.sh"
 RUN_DC_SCRIPT="${PROJECT_DIR}/jetson/run_dc_autodrive.sh"
+RUN_FULL_SCRIPT="${PROJECT_DIR}/jetson/run_full_system.sh"
 BASHRC="${HOME}/.bashrc"
 
 MARKER_START="# >>> graduation-project jetson workspace >>>"
@@ -31,6 +32,7 @@ fi
   echo "fi"
   echo "alias autodrive='bash ${RUN_SCRIPT}'"
   echo "alias dc_autodrive='bash ${RUN_DC_SCRIPT}'"
+  echo "alias robot_start='bash ${RUN_FULL_SCRIPT}'"
   echo "${MARKER_END}"
 } >> "${TMP_BASHRC}"
 
@@ -39,4 +41,4 @@ rm -f "${TMP_BASHRC}"
 
 echo "Jetson shell configured for ${CATKIN_WS}"
 echo "Open a new terminal or run: source ~/.bashrc"
-echo "After that, run: autodrive or dc_autodrive"
+echo "After that, run: autodrive, dc_autodrive, or robot_start"

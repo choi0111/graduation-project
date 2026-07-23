@@ -33,6 +33,17 @@ Run autonomous driving:
 autodrive
 ```
 
+Run autonomous driving, `navi.py`, and `~/llm/main.py` together in one
+terminal:
+
+```bash
+robot_start
+```
+
+`robot_start` waits for `/move_base/status`, `/scan`, and `/odom` before
+starting voice navigation. Press `Ctrl+C` once to stop all three processes.
+It uses `~/llm/venv`, then `~/llm/.venv`, and finally the system `python3`.
+
 Send a named navigation goal from another Jetson SSH terminal:
 
 ```bash
@@ -43,23 +54,21 @@ Multiple CLI destinations are visited in order. The robot faces each stored
 destination orientation and waits three seconds before continuing. Before the
 next destination, it reverses 0.50 m using `/odom`, rotates in place toward the
 next destination's corridor-center pose, and only then starts `move_base`.
-After the last CLI destination, it remains stopped there. LLM delivery uses the
-same transition before the next room and before the final elevator return. When
-a room has a stored `_중앙` pose, navigation uses it to align with the room
-before the short final approach:
+After the last CLI or LLM destination, it remains stopped there. When a room
+has a stored `_중앙` pose, navigation uses it to align with the room before
+the final lidar-controlled approach:
 
 ```bash
 rosrun magni_nav navi.py "544호" "540호" "542호"
 ```
 
-The original Magni destination database remains unchanged. For `542호` and
-`544호`, the large platform now navigates to the stored corridor-center pose,
-rotates toward the stored room coordinate, performs a fine angular-only
-alignment to within 0.035 rad, and then drives forward 0.30 m at 0.05 m/s.
-The final distance is measured from `/odom`; it is not a time-based movement.
-If `/odom` stops updating, the approach aborts and publishes a stop command.
+The original Magni destination database remains unchanged. The large platform
+navigates to the stored corridor-center pose, rotates toward the stored room
+coordinate, and approaches at low speed until the front laser is 0.41 m from
+the door. This represents a 0.30 m gap from the robot's front edge. If `/scan`
+or `/odom` stops updating, the approach aborts and publishes a stop command.
 
-Test the two fixed-distance approaches separately:
+Test room approaches separately:
 
 ```bash
 rosrun magni_nav navi.py 542호

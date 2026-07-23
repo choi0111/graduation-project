@@ -24,6 +24,12 @@ Run:
 autodrive
 ```
 
+Run autonomous driving, voice navigation, and the LLM process together:
+
+```bash
+robot_start
+```
+
 Send a destination from another Jetson SSH terminal:
 
 ```bash
