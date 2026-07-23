@@ -54,6 +54,16 @@ terminal:
 robot_start
 ```
 
+On a directly connected Jetson monitor, open the saved navigation view from a
+second terminal:
+
+```bash
+rviz_nav
+```
+
+The Jetson alias uses `localhost`. The MSI alias has the same name but uses the
+separate MSI network script.
+
 `robot_start` waits for `/move_base/status`, `/scan`, and `/odom` before
 starting voice navigation. Press `Ctrl+C` once to stop all three processes.
 It uses `~/llm/venv`, then `~/llm/.venv`, and finally the system `python3`.
