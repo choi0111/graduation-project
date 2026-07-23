@@ -255,15 +255,40 @@ class DeliveryNavigator(object):
         goal.target_pose.pose.orientation.w = w_ori
         return goal
 
-    def center_pose_facing_room(self, center_pose, room_pose):
+    def pose_yaw(self, pose):
+        return normalize_angle(2.0 * math.atan2(pose[2], pose[3]))
+
+    def center_pose_facing_corridor(self, center_pose, room_pose):
         center_x, center_y = center_pose[0], center_pose[1]
-        room_x, room_y = room_pose[0], room_pose[1]
-        room_yaw = math.atan2(room_y - center_y, room_x - center_x)
+        room_yaw = self.pose_yaw(room_pose)
+        corridor_yaws = (
+            normalize_angle(room_yaw + math.pi * 0.5),
+            normalize_angle(room_yaw - math.pi * 0.5),
+        )
+
+        center_dx = None
+        center_dy = None
+        if self.amcl_position is not None:
+            center_dx = center_x - self.amcl_position[0]
+            center_dy = center_y - self.amcl_position[1]
+
+        if (center_dx is not None and
+                math.hypot(center_dx, center_dy) >= 0.05):
+            reference_yaw = math.atan2(
+                center_dy, center_dx)
+        elif self.amcl_yaw is not None:
+            reference_yaw = self.amcl_yaw
+        else:
+            reference_yaw = corridor_yaws[0]
+
+        corridor_yaw = min(
+            corridor_yaws,
+            key=lambda yaw: abs(normalize_angle(yaw - reference_yaw)))
         return (
             center_x,
             center_y,
-            math.sin(room_yaw * 0.5),
-            math.cos(room_yaw * 0.5),
+            math.sin(corridor_yaw * 0.5),
+            math.cos(corridor_yaw * 0.5),
         )
 
     def wait_while_paused(self):
@@ -559,10 +584,7 @@ class DeliveryNavigator(object):
         if not self.prepare_direct_alignment("room alignment"):
             return False
 
-        current_x, current_y = self.amcl_position
-        target_yaw = math.atan2(
-            room_pose[1] - current_y,
-            room_pose[0] - current_x)
+        target_yaw = self.pose_yaw(room_pose)
         return self.rotate_to_map_yaw(
             room_name, target_yaw, "fine-aligning toward")
 
@@ -686,7 +708,7 @@ class DeliveryNavigator(object):
                 return False
             center_pose = locations[center_target]
             if room_name in FIXED_APPROACH_DISTANCES:
-                center_pose = self.center_pose_facing_room(
+                center_pose = self.center_pose_facing_corridor(
                     center_pose, locations[room_name])
             position_tolerance = CENTER_POSITION_TOLERANCES.get(room_name)
             if not self.move_to_goal(
