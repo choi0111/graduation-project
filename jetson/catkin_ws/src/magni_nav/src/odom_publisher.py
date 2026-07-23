@@ -16,7 +16,7 @@ class OdomPublisher:
         self.right_ticks_per_rev = rospy.get_param('~right_ticks_per_rev', 202795.0)
 
         self.wheel_radius = rospy.get_param('~wheel_radius', 0.125 / 2.0)
-        self.wheel_base = rospy.get_param('~wheel_base', 0.695)
+        self.wheel_base = rospy.get_param('~wheel_base', 0.725)
 
         if self.left_ticks_per_rev <= 0.0 or self.right_ticks_per_rev <= 0.0:
             raise ValueError("wheel ticks_per_rev must be positive")

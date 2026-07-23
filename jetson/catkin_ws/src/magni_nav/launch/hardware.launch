@@ -4,7 +4,9 @@
     <param name="baud" value="115200"/>
   </node>
 
-  <node pkg="magni_nav" type="odom_publisher.py" name="odom_publisher" output="screen" />
+  <node pkg="magni_nav" type="odom_publisher.py" name="odom_publisher" output="screen">
+    <param name="wheel_base" value="0.725" />
+  </node>
 
   <arg name="rplidar_port" default="/dev/serial/by-id/usb-Silicon_Labs_CP2102_USB_to_UART_Bridge_89d98cb1e25d684a9a9a1ba3000b680e-if00-port0" />
   <node pkg="rplidar_ros" type="rplidarNode" name="rplidarNode" output="screen">
@@ -16,7 +18,7 @@
     <param name="scan_mode" value="Sensitivity" />
   </node>
 
-  <node pkg="tf" type="static_transform_publisher" name="base_to_laser" args="0.0 0.0 0.90 0.0 0.0 0.0 base_footprint laser 100" />
+  <node pkg="tf" type="static_transform_publisher" name="base_to_laser" args="0.0 0.0 0.97 0.0 0.0 0.0 base_footprint laser 100" />
   
   <node pkg="tf" type="static_transform_publisher" name="laser_to_base_laser_link" args="0.0 0.0 0.0 0.0 0.0 0.0 laser base_laser_link 100" />
 </launch>

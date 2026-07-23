@@ -33,7 +33,7 @@ DWAPlannerROS:
 
   # Named destinations include a measured door-facing orientation.
   yaw_goal_tolerance: 0.20
-  # Center poses are coarse staging areas for the 0.74 m-wide platform. Final
+  # Center poses are coarse staging areas for the 0.77 m-wide platform. Final
   # room approaches temporarily tighten this value to 0.15 m in navi.py.
   xy_goal_tolerance: 1.00
   latch_xy_goal_tolerance: true

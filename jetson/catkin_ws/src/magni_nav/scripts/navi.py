@@ -13,6 +13,7 @@ from actionlib_msgs.msg import GoalStatus
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import Odometry
+from sensor_msgs.msg import LaserScan
 from std_msgs.msg import String
 
 # =========================================================
@@ -56,16 +57,17 @@ CENTER_XY_GOAL_TOLERANCE = 1.00
 FINAL_XY_GOAL_TOLERANCE = 0.15
 
 # The large platform cannot safely use the old Magni room poses near the wall.
-# These rooms stop after a short encoder-odometry approach from the corridor.
-FIXED_APPROACH_DISTANCES = {
-    u"542호": 0.30,
-    u"542호_대형": 0.30,
-    u"544호": 0.40,
-    u"545호": 0.40,
-    u"543호": 0.40,
-    u"540호": 0.40,
-    u"541호": 0.40,
-    u"539호": 0.40,
+# Use the front laser for the final approach. These values are only hard
+# travel limits; reaching the configured door clearance stops the robot first.
+LIDAR_APPROACH_MAX_DISTANCES = {
+    u"542호": 1.00,
+    u"542호_대형": 1.00,
+    u"544호": 1.00,
+    u"545호": 1.00,
+    u"543호": 1.00,
+    u"540호": 1.00,
+    u"541호": 1.00,
+    u"539호": 1.00,
 }
 # move_base can prune the final center-plan pose before completing its yaw
 # check. Accept the measured staging position here; navi performs the precise
@@ -85,8 +87,19 @@ STAGING_LINE_ALONG_TOLERANCE = 0.20
 STAGING_LINE_CROSS_TOLERANCE = 0.40
 STAGING_LINE_MISS_STOP_TOLERANCE = 0.10
 GOAL_PROGRESS_LOG_INTERVAL = 1.0
-FIXED_APPROACH_SPEED = 0.05
-FIXED_APPROACH_TIMEOUT = 12.0
+LIDAR_TO_FRONT_EDGE = 0.11
+DOOR_FRONT_CLEARANCE = 0.30
+LIDAR_DOOR_STOP_DISTANCE = LIDAR_TO_FRONT_EDGE + DOOR_FRONT_CLEARANCE
+FRONT_SCAN_HALF_ANGLE = math.radians(10.0)
+FRONT_SCAN_WAIT_TIMEOUT = 2.0
+FRONT_SCAN_STALE_TIMEOUT = 0.5
+FRONT_SCAN_REQUIRED_STOPS = 3
+LIDAR_APPROACH_MAX_START_RANGE = 1.50
+LIDAR_APPROACH_LIMIT_MARGIN = 0.12
+LIDAR_APPROACH_SPEED = 0.05
+LIDAR_APPROACH_SLOW_SPEED = 0.03
+LIDAR_APPROACH_SLOW_MARGIN = 0.20
+LIDAR_APPROACH_TIMEOUT = 35.0
 NEXT_GOAL_BACKUP_DISTANCE = 0.50
 NEXT_GOAL_BACKUP_SPEED = 0.05
 NEXT_GOAL_BACKUP_TIMEOUT = 18.0
@@ -175,12 +188,17 @@ class DeliveryNavigator(object):
         self.amcl_position = None
         self.amcl_yaw = None
         self.last_amcl_wall_time = None
+        self.front_scan_distance = None
+        self.last_front_scan_wall_time = None
+        self.front_scan_sequence = 0
         cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         self.status_pub = rospy.Publisher('/robot_status', String, queue_size=10)
         self.command_sub = rospy.Subscriber('/llm_command', String, self.command_callback)
         self.odom_sub = rospy.Subscriber('/odom', Odometry, self.odom_callback)
         self.amcl_sub = rospy.Subscriber(
             '/amcl_pose', PoseWithCovarianceStamped, self.amcl_callback)
+        self.scan_sub = rospy.Subscriber(
+            '/scan', LaserScan, self.scan_callback, queue_size=1)
         self.client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
         self.dwa_client = None
         self.mission_lock = threading.Lock()
@@ -221,6 +239,36 @@ class DeliveryNavigator(object):
         self.amcl_position = (position.x, position.y)
         self.amcl_yaw = quaternion_to_yaw(msg.pose.pose.orientation)
         self.last_amcl_wall_time = time.time()
+
+    def scan_callback(self, msg):
+        forward_distances = []
+        angle = msg.angle_min
+        for measured_range in msg.ranges:
+            if abs(angle) <= FRONT_SCAN_HALF_ANGLE:
+                if (not math.isnan(measured_range) and
+                        not math.isinf(measured_range) and
+                        measured_range >= msg.range_min and
+                        measured_range <= msg.range_max):
+                    forward_distance = measured_range * math.cos(angle)
+                    if forward_distance > 0.0:
+                        forward_distances.append(forward_distance)
+            angle += msg.angle_increment
+
+        if not forward_distances:
+            return
+
+        forward_distances.sort()
+        middle = len(forward_distances) // 2
+        if len(forward_distances) % 2:
+            median_distance = forward_distances[middle]
+        else:
+            median_distance = (
+                forward_distances[middle - 1] +
+                forward_distances[middle]) * 0.5
+
+        self.front_scan_distance = median_distance
+        self.last_front_scan_wall_time = time.time()
+        self.front_scan_sequence += 1
 
     def shutdown(self):
         if self.shutdown_started:
@@ -704,13 +752,152 @@ class DeliveryNavigator(object):
         self.stop_robot()
         return False
 
-    def drive_forward_distance(self, room_name, distance):
+    def wait_for_fresh_front_scan(self, timeout):
+        deadline = time.time() + timeout
+        while not rospy.is_shutdown() and time.time() < deadline:
+            if self.cancel_mission:
+                return False
+            if (self.front_scan_distance is not None and
+                    self.last_front_scan_wall_time is not None and
+                    time.time() - self.last_front_scan_wall_time <=
+                    FRONT_SCAN_STALE_TIMEOUT):
+                return True
+            self.stop_robot()
+            rospy.sleep(0.05)
+        return False
+
+    def drive_forward_to_door(self, room_name, maximum_distance):
         description = "approaching {}".format(console_text(room_name))
-        return self.drive_straight_distance(
-            description,
-            distance,
-            FIXED_APPROACH_SPEED,
-            FIXED_APPROACH_TIMEOUT)
+        self.client.cancel_all_goals()
+        self.stop_robot()
+        rospy.sleep(0.2)
+
+        if not self.wait_for_fresh_odom(ODOM_WAIT_TIMEOUT):
+            rospy.logerr("Fresh /odom data is required for %s", description)
+            return False
+        if not self.wait_for_fresh_front_scan(FRONT_SCAN_WAIT_TIMEOUT):
+            rospy.logerr("Fresh front /scan data is required for %s", description)
+            return False
+
+        initial_front_distance = self.front_scan_distance
+        if initial_front_distance > LIDAR_APPROACH_MAX_START_RANGE:
+            rospy.logerr(
+                "%s refused: front surface is %.3f m away (limit %.3f m)",
+                description,
+                initial_front_distance,
+                LIDAR_APPROACH_MAX_START_RANGE)
+            self.stop_robot()
+            return False
+
+        if initial_front_distance <= LIDAR_DOOR_STOP_DISTANCE:
+            self.stop_robot()
+            print(
+                "[navi] {} already at door clearance "
+                "(front gap {:.3f} m)".format(
+                    description,
+                    max(0.0, initial_front_distance -
+                        LIDAR_TO_FRONT_EDGE)))
+            return True
+
+        expected_travel = (
+            initial_front_distance - LIDAR_DOOR_STOP_DISTANCE)
+        travel_limit = min(
+            maximum_distance,
+            expected_travel + LIDAR_APPROACH_LIMIT_MARGIN)
+        start_x, start_y = self.odom_position
+        start_time = time.time()
+        rate = rospy.Rate(20)
+        last_scan_sequence = self.front_scan_sequence
+        stopped_scan_count = 0
+
+        print(
+            "[navi] {} using front lidar: {:.3f} m -> {:.3f} m "
+            "(robot gap {:.3f} m, max travel {:.3f} m)".format(
+                description,
+                initial_front_distance,
+                LIDAR_DOOR_STOP_DISTANCE,
+                DOOR_FRONT_CLEARANCE,
+                travel_limit))
+
+        while not rospy.is_shutdown():
+            if self.cancel_mission:
+                self.stop_robot()
+                return False
+
+            if self.paused:
+                pause_started = time.time()
+                self.stop_robot()
+                self.wait_while_paused()
+                start_time += time.time() - pause_started
+                stopped_scan_count = 0
+                continue
+
+            now = time.time()
+            if (self.last_odom_wall_time is None or
+                    now - self.last_odom_wall_time > ODOM_STALE_TIMEOUT):
+                rospy.logerr("/odom stopped during %s", description)
+                self.stop_robot()
+                return False
+            if (self.last_front_scan_wall_time is None or
+                    now - self.last_front_scan_wall_time >
+                    FRONT_SCAN_STALE_TIMEOUT):
+                rospy.logerr("Front /scan stopped during %s", description)
+                self.stop_robot()
+                return False
+
+            front_distance = self.front_scan_distance
+            if self.front_scan_sequence != last_scan_sequence:
+                last_scan_sequence = self.front_scan_sequence
+                if front_distance <= LIDAR_DOOR_STOP_DISTANCE:
+                    stopped_scan_count += 1
+                else:
+                    stopped_scan_count = 0
+
+            if front_distance <= LIDAR_DOOR_STOP_DISTANCE:
+                self.stop_robot()
+                if stopped_scan_count >= FRONT_SCAN_REQUIRED_STOPS:
+                    current_x, current_y = self.odom_position
+                    traveled = math.hypot(
+                        current_x - start_x, current_y - start_y)
+                    print(
+                        "[navi] {} complete at {:.3f} m "
+                        "(front gap {:.3f} m)".format(
+                            description,
+                            traveled,
+                            max(0.0, front_distance -
+                                LIDAR_TO_FRONT_EDGE)))
+                    return True
+                rate.sleep()
+                continue
+
+            current_x, current_y = self.odom_position
+            traveled = math.hypot(current_x - start_x, current_y - start_y)
+            if traveled >= travel_limit:
+                rospy.logerr(
+                    "%s stopped at safety travel limit %.3f m; "
+                    "front surface remains %.3f m away",
+                    description, traveled, front_distance)
+                self.stop_robot()
+                return False
+
+            if now - start_time > LIDAR_APPROACH_TIMEOUT:
+                rospy.logerr(
+                    "%s timed out after %.3f m; front surface %.3f m away",
+                    description, traveled, front_distance)
+                self.stop_robot()
+                return False
+
+            command = Twist()
+            if (front_distance - LIDAR_DOOR_STOP_DISTANCE <=
+                    LIDAR_APPROACH_SLOW_MARGIN):
+                command.linear.x = LIDAR_APPROACH_SLOW_SPEED
+            else:
+                command.linear.x = LIDAR_APPROACH_SPEED
+            cmd_vel_pub.publish(command)
+            rate.sleep()
+
+        self.stop_robot()
+        return False
 
     def backup_for_next_destination(self):
         return self.drive_straight_distance(
@@ -738,7 +925,7 @@ class DeliveryNavigator(object):
             if not self.set_xy_goal_tolerance(center_tolerance):
                 return False
             center_pose = locations[center_target]
-            if room_name in FIXED_APPROACH_DISTANCES:
+            if room_name in LIDAR_APPROACH_MAX_DISTANCES:
                 center_pose = self.center_pose_facing_corridor(
                     center_pose, locations[room_name])
             position_tolerance = CENTER_POSITION_TOLERANCES.get(room_name)
@@ -750,13 +937,13 @@ class DeliveryNavigator(object):
             self.stop_robot()
             rospy.sleep(1.0)
 
-        if room_name in FIXED_APPROACH_DISTANCES:
+        if room_name in LIDAR_APPROACH_MAX_DISTANCES:
             if not self.align_to_room(
                     room_name, locations[room_name]):
                 return False
             rospy.sleep(0.5)
-            return self.drive_forward_distance(
-                room_name, FIXED_APPROACH_DISTANCES[room_name])
+            return self.drive_forward_to_door(
+                room_name, LIDAR_APPROACH_MAX_DISTANCES[room_name])
 
         final_pose = locations[room_name]
         if not has_center_target:

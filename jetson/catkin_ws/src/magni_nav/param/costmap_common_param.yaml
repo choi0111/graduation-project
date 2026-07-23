@@ -1,4 +1,5 @@
-# Robot footprint in base_footprint frame.
+# Robot footprint in base_footprint frame. The drive axle is 0.11 m behind
+# the front edge and 0.52 m ahead of the rear edge.
 # x: forward/backward, y: left/right.
-footprint: [[0.31, 0.37], [0.31, -0.37], [-0.31, -0.37], [-0.31, 0.37]]
+footprint: [[0.11, 0.385], [0.11, -0.385], [-0.52, -0.385], [-0.52, 0.385]]
 footprint_padding: 0.02

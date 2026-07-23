@@ -25,7 +25,7 @@ UART_HandleTypeDef huart2;
 
 /* ================= Robot constants ================= */
 
-#define WHEEL_BASE_M          0.695f
+#define WHEEL_BASE_M          0.725f
 
 #define WHEEL_DIAMETER_M      0.125f
 #define WHEEL_CIRCUM_M        (3.1415926f * WHEEL_DIAMETER_M)
