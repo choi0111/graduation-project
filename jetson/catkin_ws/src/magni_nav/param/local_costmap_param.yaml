@@ -7,7 +7,6 @@ local_costmap:
 
   # Dynamic obstacle avoidance is disabled: there is no /scan obstacle layer.
   # The saved map is used in a rolling window so DWA still avoids mapped walls.
-  static_map: false
   rolling_window: true
   width: 4.0
   height: 4.0

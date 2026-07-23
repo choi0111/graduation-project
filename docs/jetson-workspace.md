@@ -30,6 +30,19 @@ unset ROS_HOSTNAME
 This local mode is independent of the phone hotspot address. Reconfigure ROS
 networking before using RViz from a separate MSI laptop.
 
+`jetson_autodrive.launch` starts AMCL at the measured fixed demonstration
+position:
+
+```text
+x:   -15.5441206585 m
+y:     8.32480237477 m
+yaw:  -0.6435763485 rad
+```
+
+Place the robot on the marked floor position with the same forward direction
+before starting `robot_start`. A new RViz `2D Pose Estimate` overrides this
+startup estimate when the robot begins elsewhere.
+
 Build and verify without hardware:
 
 ```bash
