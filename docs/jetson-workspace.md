@@ -44,6 +44,19 @@ robot_start
 starting voice navigation. Press `Ctrl+C` once to stop all three processes.
 It uses `~/llm/venv`, then `~/llm/.venv`, and finally the system `python3`.
 
+The LLM directory must contain these five Python files:
+
+```text
+main.py
+llm_module2.py
+config.py
+realtime_stt2.py
+tts_module2.py
+```
+
+`main_node.py` is not used. Runtime assets such as `silero_vad.onnx`,
+`sounds/`, and `.env` remain in the same LLM directory.
+
 Send a named navigation goal from another Jetson SSH terminal:
 
 ```bash

@@ -68,11 +68,21 @@ cd "${CATKIN_WS}"
 catkin_make
 source "${CATKIN_WS}/devel/setup.bash"
 
-if [ ! -f "${LLM_DIR}/${LLM_ENTRYPOINT}" ]; then
-  echo "robot_start: LLM entrypoint not found: ${LLM_DIR}/${LLM_ENTRYPOINT}" >&2
-  echo "Set LLM_DIR or LLM_ENTRYPOINT before running robot_start." >&2
-  exit 1
-fi
+REQUIRED_LLM_FILES=(
+  "${LLM_ENTRYPOINT}"
+  "llm_module2.py"
+  "config.py"
+  "realtime_stt2.py"
+  "tts_module2.py"
+)
+
+for required_file in "${REQUIRED_LLM_FILES[@]}"; do
+  if [ ! -f "${LLM_DIR}/${required_file}" ]; then
+    echo "robot_start: required LLM file not found: ${LLM_DIR}/${required_file}" >&2
+    echo "main_node.py is not used. Keep the five required Python files in LLM_DIR." >&2
+    exit 1
+  fi
+done
 
 if [ -x "${LLM_DIR}/venv/bin/python3" ]; then
   LLM_PYTHON="${LLM_DIR}/venv/bin/python3"
