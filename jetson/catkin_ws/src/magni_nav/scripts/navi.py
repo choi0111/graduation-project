@@ -805,16 +805,13 @@ class DeliveryNavigator(object):
                     self.publish_status("IDLE")
                     return
 
+        # The final room is the mission endpoint. Keep the robot stopped at
+        # the door instead of backing away and returning to the elevator.
+        self.stop_robot()
         self.status_pub.publish("SCENARIO_9")
         rospy.sleep(3.0)
-        if u"엘베" in locations:
-            if not self.prepare_for_next_destination(u"엘베"):
-                self.stop_robot()
-                self.publish_status("IDLE")
-                return
-            self.publish_status("RETURNING")
-            if not self.move_to_room(u"엘베"):
-                self.stop_robot()
+        self.stop_robot()
+        self.current_target = ""
         self.publish_status("IDLE")
 
     def command_callback(self, msg):
