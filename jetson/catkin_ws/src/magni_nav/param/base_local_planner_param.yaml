@@ -1,8 +1,8 @@
 DWAPlannerROS:
   # Keep planner limits close to the STM32 motor controller limits.
-  # Slow the robot enough that it can bend toward an offset room pose before
-  # passing it.  At 0.08 m/s and 0.05 rad/s the minimum turn radius was 1.6 m.
-  max_vel_x: 0.06
+  # Use a moderate corridor cruise speed. Final room alignment and the short
+  # fixed-distance approach are controlled separately at lower speeds.
+  max_vel_x: 0.08
   # Include zero so DWA can build a valid dynamic window from rest.  With the
   # 3 Hz controller and the old 0.04 m/s^2 limit, the first reachable speed
   # was below the old 0.02 m/s minimum, so straight trajectories were rejected
@@ -12,7 +12,7 @@ DWAPlannerROS:
   max_vel_y: 0.0
   min_vel_y: 0.0
 
-  max_vel_trans: 0.06
+  max_vel_trans: 0.08
   # Reject effectively stationary trajectories. With both minimum translation
   # and rotation set to zero, DWA could select a floating-point near-zero
   # angular command forever while an active goal remained several metres away.
@@ -27,7 +27,7 @@ DWAPlannerROS:
 
   # At 3 Hz these limits expose reachable non-zero samples in the first DWA
   # cycle while the STM32 still applies its own PWM ramp.
-  acc_lim_x: 0.08
+  acc_lim_x: 0.10
   acc_lim_theta: 0.12
   acc_lim_y: 0.0
 
@@ -56,7 +56,7 @@ DWAPlannerROS:
   stop_time_buffer: 0.3
   # The physical robot footprint does not change with speed. Dynamic scaling previously
   # enlarged its already padded footprint by up to 20% in the corridor.
-  scaling_speed: 0.06
+  scaling_speed: 0.08
   max_scaling_factor: 0.0
   oscillation_reset_dist: 0.10
   prune_plan: true
