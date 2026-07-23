@@ -2,7 +2,7 @@ DWAPlannerROS:
   # Keep planner limits close to the STM32 motor controller limits.
   # Use a moderate corridor cruise speed. Final room alignment and the short
   # fixed-distance approach are controlled separately at lower speeds.
-  max_vel_x: 0.08
+  max_vel_x: 0.09
   # Include zero so DWA can build a valid dynamic window from rest.  With the
   # 3 Hz controller and the old 0.04 m/s^2 limit, the first reachable speed
   # was below the old 0.02 m/s minimum, so straight trajectories were rejected
@@ -12,15 +12,15 @@ DWAPlannerROS:
   max_vel_y: 0.0
   min_vel_y: 0.0
 
-  max_vel_trans: 0.08
+  max_vel_trans: 0.09
   # Reject effectively stationary trajectories. With both minimum translation
   # and rotation set to zero, DWA could select a floating-point near-zero
   # angular command forever while an active goal remained several metres away.
   min_vel_trans: 0.015
   trans_stopped_vel: 0.01
 
-  # A 0.08 rad/s limit gives a 0.75 m turn radius at maximum translation while
-  # remaining well below the STM32 firmware's 0.20 rad/s clamp.
+  # Keep corridor steering gentle and below the STM32 firmware's 0.20 rad/s
+  # clamp. Direct room alignment uses separate limits in navi.py.
   max_vel_theta: 0.08
   min_vel_theta: 0.02
   theta_stopped_vel: 0.01
