@@ -73,8 +73,8 @@ LIDAR_APPROACH_MAX_DISTANCES = {
 # check. Accept the measured staging position here; navi performs the precise
 # room-facing rotation immediately afterward.
 CENTER_POSITION_TOLERANCES = {
-    u"542호": 0.90,
-    u"542호_대형": 0.90,
+    u"542호": 0.45,
+    u"542호_대형": 0.45,
     u"544호": 0.45,
     u"545호": 0.45,
     u"543호": 0.90,
@@ -94,6 +94,13 @@ FRONT_SCAN_HALF_ANGLE = math.radians(10.0)
 FRONT_SCAN_WAIT_TIMEOUT = 2.0
 FRONT_SCAN_STALE_TIMEOUT = 0.5
 FRONT_SCAN_REQUIRED_STOPS = 3
+ROBOT_HALF_WIDTH = 0.385
+ROBOT_REAR_FROM_LIDAR = 0.52
+ROTATION_CLEARANCE_MARGIN = 0.03
+ROTATION_CLEARANCE_RADIUS = (
+    math.hypot(ROBOT_HALF_WIDTH, ROBOT_REAR_FROM_LIDAR) +
+    ROTATION_CLEARANCE_MARGIN)
+ROTATION_CLEARANCE_REQUIRED_POINTS = 5
 LIDAR_APPROACH_MAX_START_RANGE = 1.50
 LIDAR_APPROACH_LIMIT_MARGIN = 0.12
 LIDAR_APPROACH_SPEED = 0.05
@@ -192,6 +199,7 @@ class DeliveryNavigator(object):
         self.amcl_yaw = None
         self.last_amcl_wall_time = None
         self.front_scan_distance = None
+        self.rotation_clearance_distance = None
         self.last_front_scan_wall_time = None
         self.front_scan_sequence = 0
         cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
@@ -260,19 +268,21 @@ class DeliveryNavigator(object):
 
     def scan_callback(self, msg):
         forward_distances = []
+        clearance_distances = []
         angle = msg.angle_min
         for measured_range in msg.ranges:
-            if abs(angle) <= FRONT_SCAN_HALF_ANGLE:
-                if (not math.isnan(measured_range) and
-                        not math.isinf(measured_range) and
-                        measured_range >= msg.range_min and
-                        measured_range <= msg.range_max):
+            if (not math.isnan(measured_range) and
+                    not math.isinf(measured_range) and
+                    measured_range >= msg.range_min and
+                    measured_range <= msg.range_max):
+                clearance_distances.append(measured_range)
+                if abs(angle) <= FRONT_SCAN_HALF_ANGLE:
                     forward_distance = measured_range * math.cos(angle)
                     if forward_distance > 0.0:
                         forward_distances.append(forward_distance)
             angle += msg.angle_increment
 
-        if not forward_distances:
+        if not forward_distances or not clearance_distances:
             return
 
         forward_distances.sort()
@@ -285,6 +295,11 @@ class DeliveryNavigator(object):
                 forward_distances[middle]) * 0.5
 
         self.front_scan_distance = median_distance
+        clearance_distances.sort()
+        clearance_index = min(
+            ROTATION_CLEARANCE_REQUIRED_POINTS - 1,
+            len(clearance_distances) - 1)
+        self.rotation_clearance_distance = clearance_distances[clearance_index]
         self.last_front_scan_wall_time = time.time()
         self.front_scan_sequence += 1
 
@@ -607,6 +622,23 @@ class DeliveryNavigator(object):
                           min_angular_speed=ALIGN_MIN_ANGULAR_SPEED,
                           max_angular_speed=ALIGN_MAX_ANGULAR_SPEED,
                           timeout=ALIGN_TIMEOUT):
+        if not self.wait_for_fresh_front_scan(FRONT_SCAN_WAIT_TIMEOUT):
+            rospy.logerr(
+                "Fresh /scan data is required before direct rotation")
+            self.stop_robot()
+            return False
+        if (self.rotation_clearance_distance is None or
+                self.rotation_clearance_distance <
+                ROTATION_CLEARANCE_RADIUS):
+            rospy.logerr(
+                "Direct rotation refused: nearest surface %.3f m, "
+                "required %.3f m",
+                self.rotation_clearance_distance
+                if self.rotation_clearance_distance is not None else -1.0,
+                ROTATION_CLEARANCE_RADIUS)
+            self.stop_robot()
+            return False
+
         required_rotation = normalize_angle(target_yaw - self.amcl_yaw)
         start_odom_yaw = self.odom_yaw
         start_time = time.time()
@@ -631,6 +663,23 @@ class DeliveryNavigator(object):
             if (self.odom_yaw is None or self.last_odom_wall_time is None or
                     time.time() - self.last_odom_wall_time > ODOM_STALE_TIMEOUT):
                 rospy.logerr("/odom stopped during direct rotation")
+                self.stop_robot()
+                return False
+            if (self.last_front_scan_wall_time is None or
+                    time.time() - self.last_front_scan_wall_time >
+                    FRONT_SCAN_STALE_TIMEOUT):
+                rospy.logerr("/scan stopped during direct rotation")
+                self.stop_robot()
+                return False
+            if (self.rotation_clearance_distance is None or
+                    self.rotation_clearance_distance <
+                    ROTATION_CLEARANCE_RADIUS):
+                rospy.logerr(
+                    "Direct rotation stopped: nearest surface %.3f m, "
+                    "required %.3f m",
+                    self.rotation_clearance_distance
+                    if self.rotation_clearance_distance is not None else -1.0,
+                    ROTATION_CLEARANCE_RADIUS)
                 self.stop_robot()
                 return False
 
@@ -1094,7 +1143,7 @@ class DeliveryNavigator(object):
             success = self.move_to_room(room)
             if not success:
                 self.stop_robot()
-                self.publish_status("IDLE")
+                self.publish_status("NAV_FAILED")
                 return
 
             has_next = index < len(normalized_rooms) - 1
@@ -1104,7 +1153,7 @@ class DeliveryNavigator(object):
                 next_room = normalized_rooms[index + 1]
                 if not self.prepare_for_next_destination(next_room):
                     self.stop_robot()
-                    self.publish_status("IDLE")
+                    self.publish_status("NAV_FAILED")
                     return
 
         if not self.return_to_initial_position():
