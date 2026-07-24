@@ -126,7 +126,10 @@ NEXT_GOAL_ALIGN_TIMEOUT = 50.0
 INITIAL_GOAL_BEHIND_ANGLE = math.pi * 0.5
 ITEM_RECEIPT_TIMEOUT = 20.0
 HOME_LOCATION_NAME = u"initial_home"
-HOME_XY_GOAL_TOLERANCE = 0.50
+HOME_XY_GOAL_TOLERANCE = 0.20
+HOME_POSITION_VERIFY_TOLERANCE = 0.25
+HOME_YAW_VERIFY_TOLERANCE = math.radians(4.0)
+HOME_ALIGNMENT_MAX_ATTEMPTS = 2
 MISSION_REPLACE_AFTER_RESUME_WINDOW = 3.0
 MISSION_REPLACE_JOIN_TIMEOUT = 3.0
 MISSION_REPLACE_RESUME_GRACE = 2.0
@@ -272,6 +275,18 @@ class DeliveryNavigator(object):
     def stop_robot(self):
         twist = Twist()
         cmd_vel_pub.publish(twist)
+
+    def cancel_goal_if_active(self):
+        try:
+            state = self.client.get_state()
+            if state in (
+                    GoalStatus.PENDING,
+                    GoalStatus.ACTIVE,
+                    GoalStatus.PREEMPTING,
+                    GoalStatus.RECALLING):
+                self.client.cancel_goal()
+        except Exception as exc:
+            rospy.logwarn("Failed to inspect/cancel active move_base goal: %s", exc)
 
     def cancel_pending_resume(self):
         timer = self.pending_resume_timer
@@ -439,6 +454,7 @@ class DeliveryNavigator(object):
             return False
 
     def distance_to_target(self, target_pose):
+        self.refresh_localization_from_tf(timeout=0.0)
         if (self.amcl_position is None or
                 self.last_amcl_wall_time is None or
                 time.time() - self.last_amcl_wall_time > AMCL_STALE_TIMEOUT):
@@ -675,7 +691,7 @@ class DeliveryNavigator(object):
         return False
 
     def prepare_direct_alignment(self, context):
-        self.client.cancel_all_goals()
+        self.cancel_goal_if_active()
         self.stop_robot()
         rospy.sleep(0.2)
 
@@ -938,7 +954,7 @@ class DeliveryNavigator(object):
             NEXT_GOAL_ALIGN_TIMEOUT)
 
     def drive_straight_distance(self, description, distance, speed, timeout):
-        self.client.cancel_all_goals()
+        self.cancel_goal_if_active()
         self.stop_robot()
         rospy.sleep(0.2)
 
@@ -1265,17 +1281,82 @@ class DeliveryNavigator(object):
 
         self.stop_robot()
         rospy.sleep(0.5)
-        if not self.rotate_to_map_yaw(
-                HOME_LOCATION_NAME,
-                self.home_yaw,
-                "aligning at initial position",
-                NEXT_GOAL_MIN_ANGULAR_SPEED,
-                NEXT_GOAL_MAX_ANGULAR_SPEED,
-                NEXT_GOAL_ALIGN_TIMEOUT):
+        if not self.refresh_localization_from_tf():
+            rospy.logerr(
+                "Cannot verify the robot pose at the initial position")
+            return False
+        home_position_error = math.hypot(
+            self.amcl_position[0] - self.home_pose[0],
+            self.amcl_position[1] - self.home_pose[1])
+        if home_position_error > HOME_POSITION_VERIFY_TOLERANCE:
+            rospy.logerr(
+                "Initial-position verification failed: %.3f m from home "
+                "(limit %.3f m)",
+                home_position_error,
+                HOME_POSITION_VERIFY_TOLERANCE)
+            return False
+        rospy.loginfo(
+            "Initial-position translation verified at %.3f m error",
+            home_position_error)
+
+        home_alignment_ok = False
+        for _attempt in range(HOME_ALIGNMENT_MAX_ATTEMPTS):
+            if not self.refresh_localization_from_tf():
+                rospy.logerr(
+                    "Cannot verify the robot heading at the initial position")
+                return False
+            home_yaw_error = normalize_angle(
+                self.home_yaw - self.amcl_yaw)
+            if abs(home_yaw_error) <= HOME_YAW_VERIFY_TOLERANCE:
+                home_alignment_ok = True
+                break
+            if not self.rotate_to_map_yaw(
+                    HOME_LOCATION_NAME,
+                    self.home_yaw,
+                    "aligning at initial position",
+                    NEXT_GOAL_MIN_ANGULAR_SPEED,
+                    NEXT_GOAL_MAX_ANGULAR_SPEED,
+                    NEXT_GOAL_ALIGN_TIMEOUT):
+                return False
+            self.stop_robot()
+            rospy.sleep(0.5)
+
+        if not home_alignment_ok:
+            if not self.refresh_localization_from_tf():
+                rospy.logerr(
+                    "Cannot verify the robot heading after final alignment")
+                return False
+            home_yaw_error = normalize_angle(
+                self.home_yaw - self.amcl_yaw)
+            home_alignment_ok = (
+                abs(home_yaw_error) <= HOME_YAW_VERIFY_TOLERANCE)
+        if not home_alignment_ok:
+            rospy.logerr(
+                "Initial heading did not converge within %d attempts",
+                HOME_ALIGNMENT_MAX_ATTEMPTS)
+            return False
+
+        if not self.refresh_localization_from_tf():
+            rospy.logerr("Cannot perform final initial-pose verification")
+            return False
+        final_home_position_error = math.hypot(
+            self.amcl_position[0] - self.home_pose[0],
+            self.amcl_position[1] - self.home_pose[1])
+        final_home_yaw_error = abs(normalize_angle(
+            self.home_yaw - self.amcl_yaw))
+        if (final_home_position_error > HOME_POSITION_VERIFY_TOLERANCE or
+                final_home_yaw_error > HOME_YAW_VERIFY_TOLERANCE):
+            rospy.logerr(
+                "Final initial-pose verification failed: %.3f m, %.1f deg",
+                final_home_position_error,
+                math.degrees(final_home_yaw_error))
             return False
 
         self.stop_robot()
-        rospy.loginfo("[RETURNED] 초기 위치 복귀가 완료되었습니다.")
+        rospy.loginfo(
+            "[RETURNED] 초기 위치 복귀 완료: position %.3f m, yaw %.1f deg",
+            final_home_position_error,
+            math.degrees(final_home_yaw_error))
         return True
 
     def run_delivery_journey(self, rooms):
@@ -1368,6 +1449,9 @@ class DeliveryNavigator(object):
             self.publish_status("NAV_FAILED")
             return False
 
+        # Let actionlib process the old goal's PREEMPTED transition before
+        # the same SimpleActionClient is reused for the replacement goal.
+        rospy.sleep(0.2)
         self.active_thread = None
         self.cancel_mission = False
         self.waiting_for_item = False
