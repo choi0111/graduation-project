@@ -102,7 +102,6 @@ ROTATION_CLEARANCE_RADIUS = (
     math.hypot(ROBOT_HALF_WIDTH, ROBOT_REAR_FROM_LIDAR) +
     ROTATION_CLEARANCE_MARGIN)
 ROTATION_CLEARANCE_REQUIRED_POINTS = 5
-LIDAR_APPROACH_MAX_START_RANGE = 1.50
 LIDAR_APPROACH_LIMIT_MARGIN = 0.12
 LIDAR_APPROACH_SPEED = 0.05
 LIDAR_APPROACH_SLOW_SPEED = 0.03
@@ -1101,12 +1100,14 @@ class DeliveryNavigator(object):
             return False
 
         initial_front_distance = self.front_scan_distance
-        if initial_front_distance > LIDAR_APPROACH_MAX_START_RANGE:
+        maximum_start_range = (
+            LIDAR_DOOR_STOP_DISTANCE + maximum_distance)
+        if initial_front_distance > maximum_start_range:
             rospy.logerr(
                 "%s refused: front surface is %.3f m away (limit %.3f m)",
                 description,
                 initial_front_distance,
-                LIDAR_APPROACH_MAX_START_RANGE)
+                maximum_start_range)
             self.stop_robot()
             return False
 
