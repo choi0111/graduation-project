@@ -1,5 +1,6 @@
 <launch>
   <node pkg="move_base" type="move_base" respawn="false" name="move_base" output="screen">
+    <remap from="cmd_vel" to="/cmd_vel_nav" />
     
     <param name="base_local_planner" value="dwa_local_planner/DWAPlannerROS" />
     <param name="planner_frequency" value="0.2" />
@@ -17,5 +18,28 @@
     <rosparam file="$(find magni_nav)/param/local_costmap_param.yaml" command="load" />
     <rosparam file="$(find magni_nav)/param/global_costmap_param.yaml" command="load" />
     <rosparam file="$(find magni_nav)/param/base_local_planner_param.yaml" command="load" />
+  </node>
+
+  <node pkg="magni_nav" type="corridor_centering.py"
+        name="corridor_centering" output="screen" required="true">
+    <param name="side_min_angle_deg" value="70.0" />
+    <param name="side_max_angle_deg" value="110.0" />
+    <param name="side_min_distance" value="0.35" />
+    <param name="side_max_distance" value="1.65" />
+    <param name="corridor_min_width" value="1.60" />
+    <param name="corridor_max_width" value="2.40" />
+    <param name="minimum_samples" value="8" />
+    <param name="minimum_forward_speed" value="0.04" />
+    <param name="maximum_input_angular_speed" value="0.08" />
+    <param name="maximum_output_angular_speed" value="0.10" />
+    <param name="centering_gain" value="0.16" />
+    <param name="centering_deadband" value="0.04" />
+    <param name="maximum_correction" value="0.06" />
+    <param name="distance_filter_alpha" value="0.35" />
+    <param name="scan_timeout" value="0.50" />
+    <param name="robot_front_from_lidar" value="0.11" />
+    <param name="robot_rear_from_lidar" value="0.52" />
+    <param name="robot_half_width" value="0.385" />
+    <param name="self_filter_margin" value="0.03" />
   </node>
 </launch>
