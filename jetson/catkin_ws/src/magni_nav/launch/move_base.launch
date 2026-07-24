@@ -29,6 +29,10 @@
     <param name="corridor_min_width" value="1.60" />
     <param name="corridor_max_width" value="2.40" />
     <param name="width_calibration_samples" value="20" />
+    <param name="expected_corridor_width" value="2.00" />
+    <param name="calibration_width_tolerance" value="0.20" />
+    <param name="calibration_max_side_difference" value="0.55" />
+    <param name="calibration_min_travel" value="0.25" />
     <param name="corridor_width_tolerance" value="0.12" />
     <param name="width_learning_alpha" value="0.02" />
     <param name="minimum_samples" value="8" />

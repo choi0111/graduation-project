@@ -7,6 +7,7 @@ import time
 
 import rospy
 from geometry_msgs.msg import Twist
+from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 
 
@@ -28,6 +29,14 @@ class CorridorCentering(object):
             '~corridor_max_width', 2.40)
         self.width_calibration_samples = int(rospy.get_param(
             '~width_calibration_samples', 20))
+        self.expected_corridor_width = rospy.get_param(
+            '~expected_corridor_width', 2.00)
+        self.calibration_width_tolerance = rospy.get_param(
+            '~calibration_width_tolerance', 0.20)
+        self.calibration_max_side_difference = rospy.get_param(
+            '~calibration_max_side_difference', 0.55)
+        self.calibration_min_travel = rospy.get_param(
+            '~calibration_min_travel', 0.25)
         self.corridor_width_tolerance = rospy.get_param(
             '~corridor_width_tolerance', 0.12)
         self.width_learning_alpha = rospy.get_param(
@@ -68,10 +77,14 @@ class CorridorCentering(object):
         self.width_calibration_values = []
         self.side_geometry_valid = False
         self.last_scan_wall_time = None
+        self.odom_distance_travelled = 0.0
+        self.last_odom_position = None
 
         self.cmd_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         self.scan_sub = rospy.Subscriber(
             '/scan', LaserScan, self.scan_callback, queue_size=1)
+        self.odom_sub = rospy.Subscriber(
+            '/odom', Odometry, self.odom_callback, queue_size=10)
         self.cmd_sub = rospy.Subscriber(
             '/cmd_vel_nav', Twist, self.cmd_callback, queue_size=10)
 
@@ -83,6 +96,19 @@ class CorridorCentering(object):
             self.corridor_min_width,
             self.corridor_max_width,
             self.centering_gain)
+
+    def odom_callback(self, msg):
+        position = (
+            msg.pose.pose.position.x,
+            msg.pose.pose.position.y)
+        with self.lock:
+            if self.last_odom_position is not None:
+                step = math.hypot(
+                    position[0] - self.last_odom_position[0],
+                    position[1] - self.last_odom_position[1])
+                if step <= 0.20:
+                    self.odom_distance_travelled += step
+            self.last_odom_position = position
 
     @staticmethod
     def median(values):
@@ -140,6 +166,8 @@ class CorridorCentering(object):
                 len(right_samples) < self.minimum_samples):
             with self.lock:
                 self.side_geometry_valid = False
+                if self.nominal_corridor_width is None:
+                    self.width_calibration_values = []
             return
 
         left = self.median(left_samples)
@@ -152,19 +180,41 @@ class CorridorCentering(object):
             if (self.corridor_min_width <= current_width <=
                     self.corridor_max_width):
                 if self.nominal_corridor_width is None:
-                    self.left_distance = self.filtered_distance(
-                        self.left_distance, left)
-                    self.right_distance = self.filtered_distance(
-                        self.right_distance, right)
-                    self.width_calibration_values.append(current_width)
-                    if (len(self.width_calibration_values) >=
-                            self.width_calibration_samples):
-                        self.nominal_corridor_width = self.median(
-                            self.width_calibration_values)
-                        rospy.loginfo(
-                            "corridor_centering calibrated normal width: "
-                            "%.3f m",
-                            self.nominal_corridor_width)
+                    calibration_candidate = (
+                        self.odom_distance_travelled >=
+                        self.calibration_min_travel and
+                        abs(current_width -
+                            self.expected_corridor_width) <=
+                        self.calibration_width_tolerance and
+                        abs(left - right) <=
+                        self.calibration_max_side_difference)
+                    if calibration_candidate:
+                        self.left_distance = self.filtered_distance(
+                            self.left_distance, left)
+                        self.right_distance = self.filtered_distance(
+                            self.right_distance, right)
+                        self.width_calibration_values.append(current_width)
+                        if (len(self.width_calibration_values) >=
+                                self.width_calibration_samples):
+                            self.nominal_corridor_width = self.median(
+                                self.width_calibration_values)
+                            rospy.loginfo(
+                                "corridor_centering calibrated normal width: "
+                                "%.3f m after %.3f m travel",
+                                self.nominal_corridor_width,
+                                self.odom_distance_travelled)
+                    else:
+                        self.width_calibration_values = []
+                        self.left_distance = None
+                        self.right_distance = None
+                        rospy.loginfo_throttle(
+                            2.0,
+                            "corridor_centering waiting for normal corridor: "
+                            "travel %.3f m, left %.3f right %.3f width %.3f",
+                            self.odom_distance_travelled,
+                            left,
+                            right,
+                            current_width)
                 elif (abs(current_width - self.nominal_corridor_width) <=
                       self.corridor_width_tolerance):
                     self.left_distance = self.filtered_distance(
@@ -178,6 +228,10 @@ class CorridorCentering(object):
                             alpha * current_width +
                             (1.0 - alpha) *
                             self.nominal_corridor_width)
+            elif self.nominal_corridor_width is None:
+                self.width_calibration_values = []
+                self.left_distance = None
+                self.right_distance = None
 
     def copy_command(self, source):
         command = Twist()
