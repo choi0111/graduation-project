@@ -30,10 +30,18 @@ Run autonomous driving, voice navigation, and the LLM process together:
 robot_start
 ```
 
+In voice-command mode, the robot waits up to 20 seconds at each destination.
+An `SCENARIO_8` receipt command advances immediately; otherwise the delivery is
+marked unattended and the robot advances after the timeout. After the final
+destination, the robot backs away and returns to the fixed AMCL initial pose.
+
 Send a destination from another Jetson SSH terminal:
 
 ```bash
 rosrun magni_nav navi.py 544호
 ```
+
+The direct `rosrun` form is a navigation test mode. It does not run the
+voice-receipt waiting and automatic-return workflow.
 
 See [docs/jetson-workspace.md](docs/jetson-workspace.md) for the manual commands.

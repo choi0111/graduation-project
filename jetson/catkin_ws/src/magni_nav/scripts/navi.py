@@ -116,6 +116,9 @@ NEXT_GOAL_MIN_ANGULAR_SPEED = 0.03
 NEXT_GOAL_MAX_ANGULAR_SPEED = 0.08
 NEXT_GOAL_ALIGN_TIMEOUT = 50.0
 INITIAL_GOAL_BEHIND_ANGLE = math.pi * 0.5
+ITEM_RECEIPT_TIMEOUT = 20.0
+HOME_LOCATION_NAME = u"initial_home"
+HOME_XY_GOAL_TOLERANCE = 0.50
 
 try:
     text_type = unicode
@@ -206,9 +209,23 @@ class DeliveryNavigator(object):
         self.paused = False
         self.cancel_mission = False
         self.item_received = False
+        self.waiting_for_item = False
         self.current_state = "IDLE"
         self.current_target = ""
         self.shutdown_started = False
+        home_x = rospy.get_param(
+            '/amcl/initial_pose_x', -15.5441206585)
+        home_y = rospy.get_param(
+            '/amcl/initial_pose_y', 8.32480237477)
+        home_yaw = rospy.get_param(
+            '/amcl/initial_pose_a', -0.6435763485)
+        self.home_pose = (
+            home_x,
+            home_y,
+            math.sin(home_yaw * 0.5),
+            math.cos(home_yaw * 0.5))
+        self.home_yaw = home_yaw
+        locations[HOME_LOCATION_NAME] = self.home_pose
 
         rospy.on_shutdown(self.shutdown)
 
@@ -959,28 +976,81 @@ class DeliveryNavigator(object):
 
     def wait_for_item(self, room_name, has_next):
         self.item_received = False
+        self.waiting_for_item = True
         self.publish_status("ARRIVED:{}".format(room_for_status(room_name)))
         self.status_pub.publish("SCENARIO_5")
-        rospy.loginfo("[WAITING] 물품 수령 확인을 위해 20초 대기합니다.")
+        rospy.loginfo(
+            "[WAITING] 물품 수령 확인을 위해 %.0f초 대기합니다.",
+            ITEM_RECEIPT_TIMEOUT)
 
-        remaining_ticks = 40
-        while remaining_ticks > 0 and not rospy.is_shutdown():
-            if self.cancel_mission:
-                return False
-            if self.paused:
-                self.wait_while_paused()
-                continue
-            if self.item_received:
-                if has_next:
+        remaining_time = ITEM_RECEIPT_TIMEOUT
+        try:
+            while remaining_time > 0.0 and not rospy.is_shutdown():
+                if self.cancel_mission:
+                    return False
+                if self.paused:
+                    self.wait_while_paused()
+                    continue
+                if self.item_received:
+                    rospy.loginfo(
+                        "[RECEIVED] %s호 물품 수령 음성을 확인했습니다.",
+                        room_for_status(room_name))
                     self.status_pub.publish("SCENARIO_8")
                     rospy.sleep(2.0)
-                return True
-            rospy.sleep(0.5)
-            remaining_ticks -= 1
+                    return True
+                sleep_time = min(0.1, remaining_time)
+                rospy.sleep(sleep_time)
+                remaining_time -= sleep_time
 
-        self.status_pub.publish("SCENARIO_13")
-        rospy.loginfo("[TIMEOUT] 물품 수령 확인 없음. 배송 실패 처리 후 다음 목적지로 넘어갑니다.")
+            self.status_pub.publish("SCENARIO_13")
+            rospy.loginfo(
+                "[TIMEOUT] 물품 수령 확인 없음. 배송 실패 처리 후 "
+                "다음 단계로 넘어갑니다.")
+            rospy.sleep(3.0)
+            return True
+        finally:
+            self.waiting_for_item = False
+
+    def return_to_initial_position(self):
+        self.status_pub.publish("SCENARIO_9")
         rospy.sleep(3.0)
+        self.publish_status("RETURNING")
+
+        if not self.backup_for_next_destination():
+            rospy.logerr(
+                "Failed to back up before returning to the initial position")
+            return False
+        rospy.sleep(0.5)
+        if not self.align_toward_destination(HOME_LOCATION_NAME):
+            rospy.logerr("Failed to align toward the initial position")
+            return False
+        self.stop_robot()
+        rospy.sleep(0.5)
+
+        if not self.set_xy_goal_tolerance(HOME_XY_GOAL_TOLERANCE):
+            return False
+        try:
+            if not self.move_to_goal(
+                    HOME_LOCATION_NAME,
+                    self.home_pose,
+                    HOME_XY_GOAL_TOLERANCE):
+                return False
+        finally:
+            self.set_xy_goal_tolerance(CENTER_XY_GOAL_TOLERANCE)
+
+        self.stop_robot()
+        rospy.sleep(0.5)
+        if not self.rotate_to_map_yaw(
+                HOME_LOCATION_NAME,
+                self.home_yaw,
+                "aligning at initial position",
+                NEXT_GOAL_MIN_ANGULAR_SPEED,
+                NEXT_GOAL_MAX_ANGULAR_SPEED,
+                NEXT_GOAL_ALIGN_TIMEOUT):
+            return False
+
+        self.stop_robot()
+        rospy.loginfo("[RETURNED] 초기 위치 복귀가 완료되었습니다.")
         return True
 
     def run_delivery_journey(self, rooms):
@@ -1023,11 +1093,12 @@ class DeliveryNavigator(object):
                     self.publish_status("IDLE")
                     return
 
-        # The final room is the mission endpoint. Keep the robot stopped at
-        # the door instead of backing away and returning to the elevator.
-        self.stop_robot()
-        self.status_pub.publish("SCENARIO_9")
-        rospy.sleep(3.0)
+        if not self.return_to_initial_position():
+            self.stop_robot()
+            rospy.logerr("Initial-position return failed")
+            self.current_target = ""
+            self.publish_status("RETURN_FAILED")
+            return
         self.stop_robot()
         self.current_target = ""
         self.publish_status("IDLE")
@@ -1060,7 +1131,14 @@ class DeliveryNavigator(object):
             return
 
         if cmd == "SCENARIO_8":
-            self.item_received = True
+            if self.waiting_for_item:
+                self.item_received = True
+                rospy.loginfo(
+                    "[LLM command] item-received signal accepted")
+            else:
+                rospy.logwarn(
+                    "Item-received signal ignored because the robot is not "
+                    "waiting at a destination")
             return
 
         if cmd not in ["SCENARIO_1", "SCENARIO_2", "SCENARIO_3", "SCENARIO_4", "SCENARIO_6"]:
