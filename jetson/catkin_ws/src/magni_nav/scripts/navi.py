@@ -96,6 +96,26 @@ FRONT_SCAN_HALF_ANGLE = math.radians(10.0)
 FRONT_SCAN_WAIT_TIMEOUT = 2.0
 FRONT_SCAN_STALE_TIMEOUT = 0.5
 FRONT_SCAN_REQUIRED_STOPS = 3
+DOOR_DETECTION_HALF_ANGLE = math.radians(40.0)
+DOOR_EDGE_VIEW_MARGIN = math.radians(5.0)
+DOOR_BASELINE_PERCENTILE = 0.25
+DOOR_RECESS_MIN_DEPTH = 0.10
+DOOR_RECESS_MAX_DEPTH = 0.80
+DOOR_WIDTH_MIN = 0.65
+DOOR_WIDTH_MAX = 1.60
+DOOR_DETECTION_MIN_POINTS = 12
+DOOR_CENTER_REQUIRED_FRAMES = 5
+DOOR_CENTER_HISTORY_SIZE = 7
+DOOR_CENTER_STABLE_ANGLE = math.radians(3.0)
+DOOR_CENTER_STABLE_WIDTH = 0.20
+DOOR_CENTER_STABLE_DEPTH = 0.15
+DOOR_CENTER_WAIT_TIMEOUT = 2.5
+DOOR_CENTER_MAX_OFFSET = math.radians(25.0)
+DOOR_CENTER_YAW_TOLERANCE = math.radians(1.5)
+DOOR_CENTER_MIN_ANGULAR_SPEED = 0.02
+DOOR_CENTER_MAX_ANGULAR_SPEED = 0.05
+DOOR_CENTER_ALIGN_TIMEOUT = 15.0
+DOOR_CENTER_MAX_ATTEMPTS = 2
 ROBOT_HALF_WIDTH = 0.385
 ROBOT_REAR_FROM_LIDAR = 0.52
 ROBOT_SELF_FILTER_MARGIN = 0.03
@@ -236,6 +256,12 @@ class DeliveryNavigator(object):
         self.right_rotation_clearance_distance = None
         self.last_front_scan_wall_time = None
         self.front_scan_sequence = 0
+        self.door_scan_lock = threading.Lock()
+        self.door_center_history = []
+        self.door_center_angle = None
+        self.door_center_width = None
+        self.door_center_depth = None
+        self.last_door_center_wall_time = None
         cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         self.status_pub = rospy.Publisher('/robot_status', String, queue_size=10)
         self.command_sub = rospy.Subscriber('/llm_command', String, self.command_callback)
@@ -370,18 +396,147 @@ class DeliveryNavigator(object):
             LIDAR_TO_FRONT_EDGE + ROBOT_SELF_FILTER_MARGIN and
             abs(point_y) <= ROBOT_HALF_WIDTH + ROBOT_SELF_FILTER_MARGIN)
 
+    @staticmethod
+    def percentile(values, fraction):
+        ordered = sorted(values)
+        if not ordered:
+            return None
+        index = int(round((len(ordered) - 1) * fraction))
+        return ordered[index]
+
+    def detect_door_center(self, profile):
+        # Forward X is constant on a flat wall even for angled laser rays.
+        forward_distances = [
+            point[1] for point in profile if point[1] is not None]
+        if len(forward_distances) < DOOR_DETECTION_MIN_POINTS * 3:
+            return None
+
+        baseline = self.percentile(
+            forward_distances, DOOR_BASELINE_PERCENTILE)
+        groups = []
+        current_group = []
+        for point in profile:
+            forward_distance = point[1]
+            if forward_distance is None:
+                if current_group:
+                    groups.append(current_group)
+                    current_group = []
+                continue
+
+            recess_depth = forward_distance - baseline
+            # A recessed door appears as one continuous band behind the wall.
+            if (DOOR_RECESS_MIN_DEPTH <= recess_depth <=
+                    DOOR_RECESS_MAX_DEPTH):
+                current_group.append(point)
+            elif current_group:
+                groups.append(current_group)
+                current_group = []
+        if current_group:
+            groups.append(current_group)
+
+        candidates = []
+        for group in groups:
+            if len(group) < DOOR_DETECTION_MIN_POINTS:
+                continue
+            if (group[0][0] <=
+                    -DOOR_DETECTION_HALF_ANGLE + DOOR_EDGE_VIEW_MARGIN or
+                    group[-1][0] >=
+                    DOOR_DETECTION_HALF_ANGLE - DOOR_EDGE_VIEW_MARGIN):
+                continue
+            lateral_values = [point[2] for point in group]
+            door_width = max(lateral_values) - min(lateral_values)
+            if not DOOR_WIDTH_MIN <= door_width <= DOOR_WIDTH_MAX:
+                continue
+
+            center_y = (
+                min(lateral_values) + max(lateral_values)) * 0.5
+            surface_x = self.percentile(
+                [point[1] for point in group], 0.50)
+            center_angle = math.atan2(center_y, surface_x)
+            if abs(center_angle) > DOOR_CENTER_MAX_OFFSET:
+                continue
+            depth = surface_x - baseline
+            candidates.append((
+                abs(center_angle),
+                center_angle,
+                door_width,
+                depth))
+
+        if not candidates:
+            return None
+        candidates.sort(key=lambda candidate: candidate[0])
+        selected = candidates[0]
+        return selected[1], selected[2], selected[3]
+
+    def reset_door_center_detection(self):
+        with self.door_scan_lock:
+            self.door_center_history = []
+            self.door_center_angle = None
+            self.door_center_width = None
+            self.door_center_depth = None
+            self.last_door_center_wall_time = None
+
+    def update_door_center_detection(self, detection):
+        with self.door_scan_lock:
+            if detection is None:
+                self.door_center_history = []
+                self.door_center_angle = None
+                self.door_center_width = None
+                self.door_center_depth = None
+                self.last_door_center_wall_time = None
+                return
+
+            self.door_center_history.append(detection)
+            if len(self.door_center_history) > DOOR_CENTER_HISTORY_SIZE:
+                self.door_center_history.pop(0)
+            if (len(self.door_center_history) <
+                    DOOR_CENTER_REQUIRED_FRAMES):
+                return
+
+            recent = self.door_center_history[-DOOR_CENTER_REQUIRED_FRAMES:]
+            angles = [item[0] for item in recent]
+            widths = [item[1] for item in recent]
+            depths = [item[2] for item in recent]
+            if (max(angles) - min(angles) >
+                    DOOR_CENTER_STABLE_ANGLE or
+                    max(widths) - min(widths) >
+                    DOOR_CENTER_STABLE_WIDTH or
+                    max(depths) - min(depths) >
+                    DOOR_CENTER_STABLE_DEPTH):
+                return
+
+            self.door_center_angle = self.percentile(angles, 0.50)
+            self.door_center_width = self.percentile(widths, 0.50)
+            self.door_center_depth = self.percentile(depths, 0.50)
+            self.last_door_center_wall_time = time.time()
+
     def scan_callback(self, msg):
         forward_distances = []
         clearance_distances = []
         left_clearance_distances = []
         right_clearance_distances = []
+        door_profile = []
         angle = msg.angle_min
         for measured_range in msg.ranges:
-            if (not math.isnan(measured_range) and
-                    not math.isinf(measured_range) and
-                    measured_range >= msg.range_min and
-                    measured_range <= msg.range_max):
-                if self.is_robot_self_return(measured_range, angle):
+            valid_range = (
+                not math.isnan(measured_range) and
+                not math.isinf(measured_range) and
+                measured_range >= msg.range_min and
+                measured_range <= msg.range_max)
+            robot_self_return = (
+                valid_range and
+                self.is_robot_self_return(measured_range, angle))
+
+            if abs(angle) <= DOOR_DETECTION_HALF_ANGLE:
+                if valid_range and not robot_self_return:
+                    point_x = measured_range * math.cos(angle)
+                    point_y = measured_range * math.sin(angle)
+                    door_profile.append((angle, point_x, point_y))
+                else:
+                    door_profile.append((angle, None, None))
+
+            if valid_range:
+                if robot_self_return:
                     angle += msg.angle_increment
                     continue
                 clearance_distances.append(measured_range)
@@ -395,6 +550,9 @@ class DeliveryNavigator(object):
                     if forward_distance > 0.0:
                         forward_distances.append(forward_distance)
             angle += msg.angle_increment
+
+        self.update_door_center_detection(
+            self.detect_door_center(door_profile))
 
         if not forward_distances or not clearance_distances:
             return
@@ -1046,6 +1204,90 @@ class DeliveryNavigator(object):
         return self.rotate_to_map_yaw(
             room_name, target_yaw, "fine-aligning toward")
 
+    def wait_for_stable_door_center(self, timeout):
+        deadline = time.time() + timeout
+        while not rospy.is_shutdown() and time.time() < deadline:
+            if self.cancel_mission:
+                return None
+            if self.paused:
+                pause_started = time.time()
+                self.stop_robot()
+                self.wait_while_paused()
+                deadline += time.time() - pause_started
+                self.reset_door_center_detection()
+                continue
+
+            with self.door_scan_lock:
+                fresh = (
+                    self.door_center_angle is not None and
+                    self.last_door_center_wall_time is not None and
+                    time.time() - self.last_door_center_wall_time <=
+                    FRONT_SCAN_STALE_TIMEOUT)
+                if fresh:
+                    return (
+                        self.door_center_angle,
+                        self.door_center_width,
+                        self.door_center_depth)
+            self.stop_robot()
+            rospy.sleep(0.05)
+        return None
+
+    def align_to_detected_door_center(self, room_name):
+        for attempt in range(DOOR_CENTER_MAX_ATTEMPTS + 1):
+            self.stop_robot()
+            self.reset_door_center_detection()
+            detection = self.wait_for_stable_door_center(
+                DOOR_CENTER_WAIT_TIMEOUT)
+            if detection is None:
+                if self.cancel_mission or rospy.is_shutdown():
+                    self.stop_robot()
+                    return False
+                rospy.logwarn(
+                    "%s door edges were not stable; keeping the saved "
+                    "room heading",
+                    console_text(room_name))
+                return True
+
+            center_angle, door_width, recess_depth = detection
+            print(
+                "[navi] {} door center: angle {:.1f} deg, "
+                "width {:.3f} m, recess {:.3f} m".format(
+                    console_text(room_name),
+                    math.degrees(center_angle),
+                    door_width,
+                    recess_depth))
+
+            if abs(center_angle) <= DOOR_CENTER_YAW_TOLERANCE:
+                self.stop_robot()
+                print("[navi] {} door center aligned".format(
+                    console_text(room_name)))
+                return True
+
+            if attempt >= DOOR_CENTER_MAX_ATTEMPTS:
+                rospy.logerr(
+                    "%s door center remains %.1f deg off after %d attempts",
+                    console_text(room_name),
+                    math.degrees(center_angle),
+                    DOOR_CENTER_MAX_ATTEMPTS)
+                self.stop_robot()
+                return False
+
+            if not self.prepare_direct_alignment("door-center alignment"):
+                return False
+            target_yaw = normalize_angle(self.amcl_yaw + center_angle)
+            if not self.rotate_to_map_yaw(
+                    room_name,
+                    target_yaw,
+                    "centering on detected door",
+                    DOOR_CENTER_MIN_ANGULAR_SPEED,
+                    DOOR_CENTER_MAX_ANGULAR_SPEED,
+                    DOOR_CENTER_ALIGN_TIMEOUT):
+                return False
+            rospy.sleep(0.3)
+
+        self.stop_robot()
+        return False
+
     def rotation_clearance_is_safe(self):
         return (
             self.rotation_clearance_distance is not None and
@@ -1510,6 +1752,9 @@ class DeliveryNavigator(object):
                     room_name, locations[room_name]):
                 return False
             rospy.sleep(0.5)
+            if not self.align_to_detected_door_center(room_name):
+                return False
+            rospy.sleep(0.3)
             return self.drive_forward_to_door(
                 room_name, LIDAR_APPROACH_MAX_DISTANCES[room_name])
 
