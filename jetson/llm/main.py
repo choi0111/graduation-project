@@ -40,6 +40,9 @@ import realtime_stt2
 import tts_module2
 import config
 
+LLM_SUPPORT_DIR = os.environ.get(
+    "LLM_DIR", os.path.join(os.path.expanduser("~"), "llm"))
+load_dotenv(os.path.join(LLM_SUPPORT_DIR, ".env"))
 load_dotenv()
 
 class VoiceControlNode:
@@ -57,6 +60,10 @@ class VoiceControlNode:
         self.target_mission = []          
         self.is_listening_paused = False 
         self.llm_client = llm_module2.get_llm_client()
+        if self.llm_client is None:
+            raise RuntimeError(
+                "OpenAI client initialization failed. Check "
+                "{}/.env and OPENAI_API_KEY.".format(LLM_SUPPORT_DIR))
         self.last_speech_time = 0
         self.stt_engine = None
         self.speech_lock = threading.Lock() # 추가됨: 음성 씹힘 방지용 스레드 락
