@@ -8,6 +8,7 @@ import sys
 import json
 import threading
 import time
+import tf
 from dynamic_reconfigure.client import Client as DynamicReconfigureClient
 from actionlib_msgs.msg import GoalStatus
 from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
@@ -128,6 +129,8 @@ HOME_LOCATION_NAME = u"initial_home"
 HOME_XY_GOAL_TOLERANCE = 0.50
 MISSION_REPLACE_AFTER_RESUME_WINDOW = 3.0
 MISSION_REPLACE_JOIN_TIMEOUT = 3.0
+MISSION_REPLACE_RESUME_GRACE = 2.0
+TF_LOOKUP_TIMEOUT = 1.0
 CACHED_AMCL_ALIGNMENT_MAX_AGE = 600.0
 CACHED_AMCL_ALIGNMENT_MAX_ODOM_DISTANCE = 0.25
 CACHED_AMCL_ALIGNMENT_MAX_ODOM_YAW = math.radians(20.0)
@@ -181,12 +184,17 @@ def room_for_status(location_name):
     return room
 
 
-def quaternion_to_yaw(orientation):
+def quaternion_components_to_yaw(x, y, z, w):
     siny_cosp = 2.0 * (
-        orientation.w * orientation.z + orientation.x * orientation.y)
+        w * z + x * y)
     cosy_cosp = 1.0 - 2.0 * (
-        orientation.y * orientation.y + orientation.z * orientation.z)
+        y * y + z * z)
     return math.atan2(siny_cosp, cosy_cosp)
+
+
+def quaternion_to_yaw(orientation):
+    return quaternion_components_to_yaw(
+        orientation.x, orientation.y, orientation.z, orientation.w)
 
 
 def normalize_angle(angle):
@@ -218,6 +226,7 @@ class DeliveryNavigator(object):
             '/amcl_pose', PoseWithCovarianceStamped, self.amcl_callback)
         self.scan_sub = rospy.Subscriber(
             '/scan', LaserScan, self.scan_callback, queue_size=1)
+        self.tf_listener = tf.TransformListener()
         self.client = actionlib.SimpleActionClient('move_base', MoveBaseAction)
         self.dwa_client = None
         self.mission_lock = threading.Lock()
@@ -225,6 +234,7 @@ class DeliveryNavigator(object):
         self.paused = False
         self.resume_status = "IDLE"
         self.last_resume_command_wall_time = None
+        self.pending_resume_timer = None
         self.cancel_mission = False
         self.item_received = False
         self.waiting_for_item = False
@@ -262,6 +272,31 @@ class DeliveryNavigator(object):
     def stop_robot(self):
         twist = Twist()
         cmd_vel_pub.publish(twist)
+
+    def cancel_pending_resume(self):
+        timer = self.pending_resume_timer
+        self.pending_resume_timer = None
+        if timer is not None:
+            try:
+                timer.shutdown()
+            except Exception:
+                pass
+
+    def finish_pending_resume(self, _event):
+        with self.mission_lock:
+            self.pending_resume_timer = None
+            if not self.paused or self.cancel_mission:
+                return
+            self.paused = False
+            self.last_resume_command_wall_time = time.time()
+            resume_status = self.resume_status
+            if not resume_status or resume_status == "PAUSED":
+                resume_status = (
+                    "MOVING:{}".format(self.current_target)
+                    if self.current_target else "MOVING")
+
+        self.publish_status(resume_status)
+        rospy.loginfo("Mission resumed with status %s", resume_status)
 
     def odom_callback(self, msg):
         position = msg.pose.pose.position
@@ -322,6 +357,7 @@ class DeliveryNavigator(object):
         self.shutdown_started = True
         self.cancel_mission = True
         self.paused = False
+        self.cancel_pending_resume()
 
         try:
             self.client.cancel_all_goals()
@@ -617,6 +653,27 @@ class DeliveryNavigator(object):
             rospy.sleep(0.05)
         return False
 
+    def refresh_localization_from_tf(self, timeout=TF_LOOKUP_TIMEOUT):
+        deadline = time.time() + max(0.0, timeout)
+        while not rospy.is_shutdown():
+            try:
+                translation, rotation = self.tf_listener.lookupTransform(
+                    'map', 'base_footprint', rospy.Time(0))
+                self.amcl_position = (translation[0], translation[1])
+                self.amcl_yaw = quaternion_components_to_yaw(
+                    rotation[0], rotation[1], rotation[2], rotation[3])
+                self.last_amcl_wall_time = time.time()
+                if self.odom_position is not None and self.odom_yaw is not None:
+                    self.last_amcl_odom_position = self.odom_position
+                    self.last_amcl_odom_yaw = self.odom_yaw
+                return True
+            except (tf.LookupException, tf.ConnectivityException,
+                    tf.ExtrapolationException):
+                if time.time() >= deadline:
+                    return False
+                rospy.sleep(0.05)
+        return False
+
     def prepare_direct_alignment(self, context):
         self.client.cancel_all_goals()
         self.stop_robot()
@@ -625,8 +682,12 @@ class DeliveryNavigator(object):
         if not self.wait_for_fresh_odom(ODOM_WAIT_TIMEOUT):
             rospy.logerr("Fresh /odom data is required for %s", context)
             return False
-        if not self.wait_for_fresh_localization(AMCL_WAIT_TIMEOUT):
-            rospy.logerr("Fresh /amcl_pose data is required for %s", context)
+        if (not self.refresh_localization_from_tf() and
+                not self.wait_for_fresh_localization(AMCL_WAIT_TIMEOUT) and
+                not self.refresh_cached_localization_from_odom()):
+            rospy.logerr(
+                "Current map->base_footprint pose is required for %s",
+                context)
             return False
         return True
 
@@ -825,6 +886,7 @@ class DeliveryNavigator(object):
         return True
 
     def align_first_destination_if_behind(self, room_name):
+        self.refresh_localization_from_tf()
         localization_is_fresh = (
             self.amcl_position is not None and
             self.amcl_yaw is not None and
@@ -1284,6 +1346,7 @@ class DeliveryNavigator(object):
             payload)
         self.cancel_mission = True
         self.paused = False
+        self.cancel_pending_resume()
         self.last_resume_command_wall_time = None
         self.item_received = False
         try:
@@ -1327,6 +1390,7 @@ class DeliveryNavigator(object):
         rospy.loginfo("[LLM command] %s %s", cmd, payload)
 
         if cmd == "SCENARIO_21":
+            self.cancel_pending_resume()
             if not self.paused:
                 self.resume_status = self.current_state
             self.paused = True
@@ -1340,16 +1404,15 @@ class DeliveryNavigator(object):
 
         if cmd == "SCENARIO_22":
             if self.paused:
-                self.paused = False
-                self.last_resume_command_wall_time = time.time()
-                resume_status = self.resume_status
-                if not resume_status or resume_status == "PAUSED":
-                    resume_status = (
-                        "MOVING:{}".format(self.current_target)
-                        if self.current_target else "MOVING")
-                self.publish_status(resume_status)
+                self.cancel_pending_resume()
+                self.pending_resume_timer = rospy.Timer(
+                    rospy.Duration(MISSION_REPLACE_RESUME_GRACE),
+                    self.finish_pending_resume,
+                    oneshot=True)
                 rospy.loginfo(
-                    "Mission resumed with status %s", resume_status)
+                    "Resume requested; waiting %.1f seconds for a possible "
+                    "replacement destination",
+                    MISSION_REPLACE_RESUME_GRACE)
             else:
                 rospy.logwarn(
                     "Resume command ignored because the mission is not paused")
@@ -1380,6 +1443,7 @@ class DeliveryNavigator(object):
             return
 
         if self.active_thread and self.active_thread.is_alive():
+            self.cancel_pending_resume()
             resumed_recently = (
                 self.last_resume_command_wall_time is not None and
                 time.time() - self.last_resume_command_wall_time <=
