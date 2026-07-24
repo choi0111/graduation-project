@@ -755,10 +755,7 @@ class DeliveryNavigator(object):
     def align_first_destination_if_behind(self, room_name):
         if (not self.has_received_amcl_pose and
                 self.home_localization_bootstrap_available):
-            if (self.wait_for_fresh_odom(ODOM_WAIT_TIMEOUT) and
-                    math.hypot(
-                        self.odom_position[0],
-                        self.odom_position[1]) <= 0.05):
+            if self.wait_for_fresh_odom(ODOM_WAIT_TIMEOUT):
                 self.amcl_position = (
                     self.home_pose[0],
                     self.home_pose[1])
