@@ -70,6 +70,7 @@ class VoiceControlNode:
             "SCENARIO_6": "알겠습니다. 목적지를 알려주세요.", 
             "SCENARIO_6_ASK": "알겠습니다. 목적지를 알려주세요.", 
             "SCENARIO_8": "물품 수령이 확인되었습니다. 다음 목적지로 이동합니다.",
+            # [요청 반영] 멘트 수정 금지: 텍스트는 그대로 유지합니다.
             "SCENARIO_9": "배송을 모두 완료했습니다. 이제 처음 출발했던 장소로 복귀합니다.",
             # [요청 반영] 시나리오 10, 11, 12, 14 완전 삭제
             "SCENARIO_13": "수령인이 부재중입니다. 물건을 배송 실패함으로 등록하고 다음 목적지로 이동합니다.",
@@ -84,7 +85,7 @@ class VoiceControlNode:
             "SCENARIO_18": "네, 복도 끝에는 '531호'와 '532a호', '532b호'가 있습니다. 어느 곳으로 배송할까요?",
             "SCENARIO_19": "알겠습니다. 직전 배송지인 '{}호'로 다시 이동하겠습니다.",
             "SCENARIO_20": "네, 배송을 시작하겠습니다. 목적지가 어디인가요?",
-            
+
             "SCENARIO_21": "네, 정지했습니다.", 
             "SCENARIO_22": "이동을 다시 시작합니다.",
             
@@ -111,6 +112,7 @@ class VoiceControlNode:
                 rospy.loginfo(" [상태 방어] 정지 상태이므로 자율주행 노드의 IDLE 신호를 무시하고 목적지를 기억합니다.")
                 return
             # -------------------------------------------------------------------------
+
             self.current_robot_state = raw_msg
             if raw_msg in ["RETURNING", "IDLE"]: 
                 self.current_target_room = ""
@@ -120,7 +122,7 @@ class VoiceControlNode:
                     # --- 초기 위치로 복귀 시 호출어 수면 모드로 전환 ---
                     if self.stt_engine:
                         self.stt_engine.is_awake = False
-                        rospy.loginfo("[상태 전환] 초기 위치로 복귀 완료. 호출어 수면 모드로 전환됩니다.")
+                        rospy.loginfo("[상태 전환] 초기 위치 복귀 완료. 호출어 수면 모드로 전환됩니다.")
                     # -------------------------------------------------------------
 
         if raw_msg.startswith("SCENARIO_"):
@@ -198,6 +200,15 @@ class VoiceControlNode:
                 return 
 
             if not clean_payload: return
+
+            # --- [실제 로봇 버그 완벽 해결 1] ---
+            # 자율주행 노드가 '정지' 상태로 잠겨있다면 새 목적지를 무시해버리므로
+            # 잠금 해제(22번) 신호를 먼저 보낸 뒤 새 목적지를 주입합니다.
+            if self.current_robot_state == "PAUSED":
+                self.command_pub.publish(json.dumps({"command": "SCENARIO_22", "payload": []}))
+                time.sleep(0.2) # 자율주행 노드가 잠금을 풀 시간을 아주 잠깐 줌
+            # -----------------------------------
+
             self.target_mission = clean_payload
             self.delivered_history = []
             
@@ -274,10 +285,10 @@ class VoiceControlNode:
         elif scenario == "SCENARIO_22":
             if self.current_robot_state == "PAUSED":
                 self.play_robot_speech(self.pdf_responses["SCENARIO_22"])
-                self.command_pub.publish(json.dumps({"command": "SCENARIO_22", "payload": []}))
-                # --- [안전장치 3] 재출발 시 기존 목적지를 살려서 MOVING 상태로 원복 ---
-                self.current_robot_state = f"MOVING:{self.current_target_room}" if self.current_target_room else "MOVING"
-                # -------------------------------------------------------------------------
+                self.command_pub.publish(json.dumps({
+                    "command": "SCENARIO_22",
+                    "payload": []
+                }))
             else:
                 rospy.loginfo("🚫 [명령 차단] 현재 정지(PAUSED) 상태가 아니므로 재출발 명령을 무시합니다.")
 

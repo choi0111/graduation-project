@@ -1325,8 +1325,8 @@ class DeliveryNavigator(object):
                     continue
                 if self.item_received:
                     rospy.loginfo(
-                        "[RECEIVED] %s호 물품 수령 음성을 확인했습니다.",
-                        room_for_status(room_name))
+                        "[RECEIVED] item receipt confirmed for room %s",
+                        console_text(room_name))
                     self.status_pub.publish("SCENARIO_8")
                     rospy.sleep(2.0)
                     return True
