@@ -74,27 +74,18 @@ LIDAR_APPROACH_MAX_DISTANCES = {
 # check. Accept the measured staging position here; navi performs the precise
 # room-facing rotation immediately afterward.
 CENTER_POSITION_TOLERANCES = {
-    u"542호": 0.25,
-    u"542호_대형": 0.25,
-    u"544호": 0.25,
-    u"545호": 0.25,
+    u"542호": 0.45,
+    u"542호_대형": 0.45,
+    u"544호": 0.45,
+    u"545호": 0.45,
     u"543호": 0.90,
     u"540호": 0.90,
     u"541호": 0.90,
     u"539호": 0.90,
 }
-# The route from the fixed home pose to 545 can cut diagonally toward the
-# room-side wall. Enter the measured center pose from the corridor centerline
-# so the large platform still has enough clearance for its final rotation.
-CENTER_ENTRY_DISTANCES = {
-    u"544호": 1.50,
-    u"545호": 1.50,
-}
-CENTER_ENTRY_POSITION_TOLERANCE = 0.25
-CENTER_ENTRY_SKIP_MARGIN = 0.50
 COARSE_GOAL_FALLBACK_MARGIN = 0.10
 STAGING_LINE_ALONG_TOLERANCE = 0.20
-STAGING_LINE_CROSS_TOLERANCE = 0.20
+STAGING_LINE_CROSS_TOLERANCE = 0.40
 STAGING_LINE_MISS_STOP_TOLERANCE = 0.10
 GOAL_PROGRESS_LOG_INTERVAL = 1.0
 LIDAR_TO_FRONT_EDGE = 0.11
@@ -479,45 +470,6 @@ class DeliveryNavigator(object):
             center_y,
             math.sin(corridor_yaw * 0.5),
             math.cos(corridor_yaw * 0.5),
-        )
-
-    def center_entry_pose(self, center_pose, room_pose, entry_distance):
-        if self.amcl_position is None:
-            return None
-
-        room_dx = room_pose[0] - center_pose[0]
-        room_dy = room_pose[1] - center_pose[1]
-        room_distance = math.hypot(room_dx, room_dy)
-        if room_distance < 0.05:
-            return None
-
-        room_normal_x = room_dx / room_distance
-        room_normal_y = room_dy / room_distance
-        corridor_x = -room_normal_y
-        corridor_y = room_normal_x
-        current_offset_x = self.amcl_position[0] - center_pose[0]
-        current_offset_y = self.amcl_position[1] - center_pose[1]
-        current_along = (
-            current_offset_x * corridor_x +
-            current_offset_y * corridor_y)
-        if abs(current_along) < 0.05:
-            return None
-
-        approach_sign = 1.0 if current_along > 0.0 else -1.0
-        entry_x = (
-            center_pose[0] +
-            approach_sign * corridor_x * entry_distance)
-        entry_y = (
-            center_pose[1] +
-            approach_sign * corridor_y * entry_distance)
-        entry_yaw = math.atan2(
-            center_pose[1] - entry_y,
-            center_pose[0] - entry_x)
-        return (
-            entry_x,
-            entry_y,
-            math.sin(entry_yaw * 0.5),
-            math.cos(entry_yaw * 0.5),
         )
 
     def wait_while_paused(self):
@@ -1297,41 +1249,6 @@ class DeliveryNavigator(object):
             if room_name in LIDAR_APPROACH_MAX_DISTANCES:
                 center_pose = self.center_pose_facing_corridor(
                     center_pose, locations[room_name])
-            entry_distance = CENTER_ENTRY_DISTANCES.get(room_name)
-            if entry_distance is not None:
-                if (not self.refresh_localization_from_tf() and
-                        not self.wait_for_fresh_localization(
-                            AMCL_WAIT_TIMEOUT)):
-                    rospy.logerr(
-                        "Fresh localization is required for %s center entry",
-                        console_text(room_name))
-                    return False
-                distance_to_center = self.distance_to_target(center_pose)
-                if (distance_to_center is not None and
-                        distance_to_center >
-                        entry_distance + CENTER_ENTRY_SKIP_MARGIN):
-                    entry_pose = self.center_entry_pose(
-                        center_pose,
-                        locations[room_name],
-                        entry_distance)
-                    if entry_pose is None:
-                        rospy.logerr(
-                            "Cannot calculate the center entry pose for %s",
-                            console_text(room_name))
-                        return False
-                    entry_target = room_name + u"_중앙_entry"
-                    if not self.move_to_goal(
-                            entry_target,
-                            entry_pose,
-                            CENTER_ENTRY_POSITION_TOLERANCE):
-                        print(
-                            "[navi] center entry waypoint failed for {}".format(
-                                console_text(room_name)))
-                        return False
-                    self.stop_robot()
-                    rospy.sleep(0.5)
-                    center_pose = self.center_pose_facing_corridor(
-                        center_pose, locations[room_name])
             position_tolerance = CENTER_POSITION_TOLERANCES.get(room_name)
             if not self.move_to_goal(
                     center_target, center_pose, position_tolerance,
