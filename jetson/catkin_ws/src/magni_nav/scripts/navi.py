@@ -133,6 +133,14 @@ HOME_POSITION_VERIFY_TOLERANCE = 0.25
 HOME_YAW_VERIFY_TOLERANCE = math.radians(4.0)
 HOME_ALIGNMENT_MAX_ATTEMPTS = 2
 HOME_TURN_DIRECTION_MIN_ANGLE = math.radians(150.0)
+HOME_LOCALIZATION_JUMP_DISTANCE = 1.50
+HOME_LOCALIZATION_JUMP_YAW = math.radians(45.0)
+HOME_LOCALIZATION_RECOVERY_POSITION = 0.75
+HOME_LOCALIZATION_RECOVERY_YAW = math.radians(30.0)
+HOME_LOCALIZATION_RECOVERY_TIMEOUT = 6.0
+HOME_LOCALIZATION_MAX_RECOVERIES = 2
+HOME_LOCALIZATION_COVARIANCE_XY = 0.04
+HOME_LOCALIZATION_COVARIANCE_YAW = 0.03
 SIDE_CLEARANCE_MIN_ANGLE = math.radians(45.0)
 SIDE_CLEARANCE_MAX_ANGLE = math.radians(135.0)
 MISSION_REPLACE_AFTER_RESUME_WINDOW = 3.0
@@ -236,6 +244,8 @@ class DeliveryNavigator(object):
         self.odom_sub = rospy.Subscriber('/odom', Odometry, self.odom_callback)
         self.amcl_sub = rospy.Subscriber(
             '/amcl_pose', PoseWithCovarianceStamped, self.amcl_callback)
+        self.initialpose_pub = rospy.Publisher(
+            '/initialpose', PoseWithCovarianceStamped, queue_size=1)
         self.scan_sub = rospy.Subscriber(
             '/scan', LaserScan, self.scan_callback, queue_size=1)
         self.tf_listener = tf.TransformListener()
@@ -596,7 +606,8 @@ class DeliveryNavigator(object):
                 self.amcl_position[0], self.amcl_position[1]))
 
     def move_to_goal(self, location_name, target_pose=None,
-                     position_tolerance=None, staging_room_pose=None):
+                     position_tolerance=None, staging_room_pose=None,
+                     localization_guard=False):
         if target_pose is None and location_name not in locations:
             print("[navi] unknown location: {}".format(console_text(location_name)))
             return False
@@ -606,6 +617,14 @@ class DeliveryNavigator(object):
 
         print("\n[navi] moving to {}".format(console_text(location_name)))
         last_progress_log = 0.0
+        guard_state = None
+        if localization_guard:
+            guard_state = self.create_localization_guard()
+            if guard_state is None:
+                rospy.logerr(
+                    "Cannot start localization guard for %s",
+                    console_text(location_name))
+                return False
         while not rospy.is_shutdown():
             if self.cancel_mission:
                 self.client.cancel_goal()
@@ -635,6 +654,13 @@ class DeliveryNavigator(object):
                     self.stop_robot()
                     self.wait_while_paused()
                     break
+                if guard_state is not None:
+                    recovery_state = self.monitor_localization_guard(
+                        guard_state, location_name)
+                    if recovery_state < 0:
+                        return False
+                    if recovery_state > 0:
+                        break
                 now = time.time()
                 if (position_tolerance is not None and
                         now - last_progress_log >= GOAL_PROGRESS_LOG_INTERVAL):
@@ -735,6 +761,164 @@ class DeliveryNavigator(object):
                     return False
                 rospy.sleep(0.05)
         return False
+
+    def lookup_map_pose(self):
+        try:
+            translation, rotation = self.tf_listener.lookupTransform(
+                'map', 'base_footprint', rospy.Time(0))
+            return (
+                (translation[0], translation[1]),
+                quaternion_components_to_yaw(
+                    rotation[0], rotation[1], rotation[2], rotation[3]))
+        except (tf.LookupException, tf.ConnectivityException,
+                tf.ExtrapolationException):
+            return None
+
+    def create_localization_guard(self):
+        if not self.wait_for_fresh_odom(ODOM_WAIT_TIMEOUT):
+            return None
+        map_pose = self.lookup_map_pose()
+        if map_pose is None:
+            return None
+        return {
+            'map_position': map_pose[0],
+            'map_yaw': map_pose[1],
+            'odom_position': self.odom_position,
+            'odom_yaw': self.odom_yaw,
+            'recoveries': 0,
+        }
+
+    def projected_guard_map_pose(self, guard_state):
+        if self.odom_position is None or self.odom_yaw is None:
+            return None
+
+        odom_dx = (
+            self.odom_position[0] - guard_state['odom_position'][0])
+        odom_dy = (
+            self.odom_position[1] - guard_state['odom_position'][1])
+        anchor_odom_yaw = guard_state['odom_yaw']
+        local_dx = (
+            math.cos(anchor_odom_yaw) * odom_dx +
+            math.sin(anchor_odom_yaw) * odom_dy)
+        local_dy = (
+            -math.sin(anchor_odom_yaw) * odom_dx +
+            math.cos(anchor_odom_yaw) * odom_dy)
+        anchor_map_yaw = guard_state['map_yaw']
+        map_dx = (
+            math.cos(anchor_map_yaw) * local_dx -
+            math.sin(anchor_map_yaw) * local_dy)
+        map_dy = (
+            math.sin(anchor_map_yaw) * local_dx +
+            math.cos(anchor_map_yaw) * local_dy)
+        return (
+            (
+                guard_state['map_position'][0] + map_dx,
+                guard_state['map_position'][1] + map_dy,
+            ),
+            normalize_angle(
+                guard_state['map_yaw'] +
+                normalize_angle(self.odom_yaw - anchor_odom_yaw)),
+        )
+
+    def update_localization_guard_anchor(self, guard_state, map_pose):
+        guard_state['map_position'] = map_pose[0]
+        guard_state['map_yaw'] = map_pose[1]
+        guard_state['odom_position'] = self.odom_position
+        guard_state['odom_yaw'] = self.odom_yaw
+        self.amcl_position = map_pose[0]
+        self.amcl_yaw = map_pose[1]
+        self.last_amcl_wall_time = time.time()
+        self.last_amcl_odom_position = self.odom_position
+        self.last_amcl_odom_yaw = self.odom_yaw
+
+    def publish_recovery_initial_pose(self, map_pose):
+        message = PoseWithCovarianceStamped()
+        message.header.frame_id = "map"
+        message.header.stamp = rospy.Time.now()
+        message.pose.pose.position.x = map_pose[0][0]
+        message.pose.pose.position.y = map_pose[0][1]
+        message.pose.pose.orientation.z = math.sin(map_pose[1] * 0.5)
+        message.pose.pose.orientation.w = math.cos(map_pose[1] * 0.5)
+        message.pose.covariance[0] = HOME_LOCALIZATION_COVARIANCE_XY
+        message.pose.covariance[7] = HOME_LOCALIZATION_COVARIANCE_XY
+        message.pose.covariance[35] = HOME_LOCALIZATION_COVARIANCE_YAW
+        for _attempt in range(3):
+            self.initialpose_pub.publish(message)
+            rospy.sleep(0.1)
+
+    def monitor_localization_guard(self, guard_state, location_name):
+        if (self.last_odom_wall_time is None or
+                time.time() - self.last_odom_wall_time >
+                ODOM_STALE_TIMEOUT):
+            rospy.logerr(
+                "/odom stopped while guarding localization for %s",
+                console_text(location_name))
+            self.stop_robot()
+            return -1
+
+        projected_pose = self.projected_guard_map_pose(guard_state)
+        observed_pose = self.lookup_map_pose()
+        if projected_pose is None or observed_pose is None:
+            return 0
+
+        position_jump = math.hypot(
+            observed_pose[0][0] - projected_pose[0][0],
+            observed_pose[0][1] - projected_pose[0][1])
+        yaw_jump = abs(normalize_angle(
+            observed_pose[1] - projected_pose[1]))
+        if (position_jump <= HOME_LOCALIZATION_JUMP_DISTANCE and
+                yaw_jump <= HOME_LOCALIZATION_JUMP_YAW):
+            self.update_localization_guard_anchor(
+                guard_state, observed_pose)
+            return 0
+
+        self.cancel_goal_if_active()
+        self.stop_robot()
+        guard_state['recoveries'] += 1
+        rospy.logerr(
+            "Localization jump during %s: %.3f m, %.1f deg; "
+            "restoring the odom-continuous map pose",
+            console_text(location_name),
+            position_jump,
+            math.degrees(yaw_jump))
+        if guard_state['recoveries'] > HOME_LOCALIZATION_MAX_RECOVERIES:
+            rospy.logerr(
+                "Localization recovery limit exceeded during %s",
+                console_text(location_name))
+            return -1
+
+        self.publish_recovery_initial_pose(projected_pose)
+        deadline = time.time() + HOME_LOCALIZATION_RECOVERY_TIMEOUT
+        while not rospy.is_shutdown() and time.time() < deadline:
+            if self.cancel_mission:
+                return -1
+            self.stop_robot()
+            recovered_pose = self.lookup_map_pose()
+            if recovered_pose is not None:
+                position_error = math.hypot(
+                    recovered_pose[0][0] - projected_pose[0][0],
+                    recovered_pose[0][1] - projected_pose[0][1])
+                yaw_error = abs(normalize_angle(
+                    recovered_pose[1] - projected_pose[1]))
+                if (position_error <=
+                        HOME_LOCALIZATION_RECOVERY_POSITION and
+                        yaw_error <= HOME_LOCALIZATION_RECOVERY_YAW):
+                    self.update_localization_guard_anchor(
+                        guard_state, recovered_pose)
+                    rospy.logwarn(
+                        "Localization restored during %s: %.3f m, %.1f deg",
+                        console_text(location_name),
+                        position_error,
+                        math.degrees(yaw_error))
+                    rospy.sleep(0.5)
+                    return 1
+            rospy.sleep(0.1)
+
+        rospy.logerr(
+            "Localization did not recover during %s",
+            console_text(location_name))
+        self.stop_robot()
+        return -1
 
     def prepare_direct_alignment(self, context):
         self.cancel_goal_if_active()
@@ -1428,7 +1612,8 @@ class DeliveryNavigator(object):
             if not self.move_to_goal(
                     HOME_LOCATION_NAME,
                     self.home_pose,
-                    HOME_XY_GOAL_TOLERANCE):
+                    HOME_XY_GOAL_TOLERANCE,
+                    localization_guard=True):
                 return False
         finally:
             self.set_xy_goal_tolerance(CENTER_XY_GOAL_TOLERANCE)

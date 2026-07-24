@@ -37,8 +37,15 @@
     <param name="update_min_d" value="0.05" />
     <param name="update_min_a" value="0.05" />
     <param name="resample_interval" value="1" />
+    <param name="odom_model_type" value="diff" />
+    <param name="odom_alpha1" value="0.05" />
+    <param name="odom_alpha2" value="0.05" />
+    <param name="odom_alpha3" value="0.03" />
+    <param name="odom_alpha4" value="0.03" />
+    <param name="recovery_alpha_slow" value="0.0" />
+    <param name="recovery_alpha_fast" value="0.0" />
     <param name="laser_model_type" value="likelihood_field" />
-    <param name="laser_max_beams" value="45" />
+    <param name="laser_max_beams" value="60" />
     <param name="min_particles" value="500" />
     <param name="max_particles" value="2000" />
   </node>
