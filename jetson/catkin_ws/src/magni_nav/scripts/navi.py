@@ -126,6 +126,8 @@ INITIAL_GOAL_BEHIND_ANGLE = math.pi * 0.5
 ITEM_RECEIPT_TIMEOUT = 20.0
 HOME_LOCATION_NAME = u"initial_home"
 HOME_XY_GOAL_TOLERANCE = 0.50
+MISSION_REPLACE_AFTER_RESUME_WINDOW = 3.0
+MISSION_REPLACE_JOIN_TIMEOUT = 3.0
 
 try:
     text_type = unicode
@@ -216,6 +218,7 @@ class DeliveryNavigator(object):
         self.active_thread = None
         self.paused = False
         self.resume_status = "IDLE"
+        self.last_resume_command_wall_time = None
         self.cancel_mission = False
         self.item_received = False
         self.waiting_for_item = False
@@ -1143,6 +1146,8 @@ class DeliveryNavigator(object):
             success = self.move_to_room(room)
             if not success:
                 self.stop_robot()
+                if self.cancel_mission:
+                    return
                 self.publish_status("NAV_FAILED")
                 return
 
@@ -1153,11 +1158,15 @@ class DeliveryNavigator(object):
                 next_room = normalized_rooms[index + 1]
                 if not self.prepare_for_next_destination(next_room):
                     self.stop_robot()
+                    if self.cancel_mission:
+                        return
                     self.publish_status("NAV_FAILED")
                     return
 
         if not self.return_to_initial_position():
             self.stop_robot()
+            if self.cancel_mission:
+                return
             rospy.logerr("Initial-position return failed")
             self.current_target = ""
             self.publish_status("RETURN_FAILED")
@@ -1165,6 +1174,41 @@ class DeliveryNavigator(object):
         self.stop_robot()
         self.current_target = ""
         self.publish_status("IDLE")
+
+    def replace_active_mission(self, payload):
+        rospy.logwarn(
+            "Replacing the paused active mission with new destinations: %s",
+            payload)
+        self.cancel_mission = True
+        self.paused = False
+        self.last_resume_command_wall_time = None
+        self.item_received = False
+        try:
+            self.client.cancel_all_goals()
+        except Exception as exc:
+            rospy.logwarn(
+                "Failed to cancel move_base goal during mission replacement: %s",
+                exc)
+        self.stop_robot()
+
+        old_thread = self.active_thread
+        if old_thread and old_thread.is_alive():
+            old_thread.join(MISSION_REPLACE_JOIN_TIMEOUT)
+        if old_thread and old_thread.is_alive():
+            rospy.logerr(
+                "Old mission did not stop within %.1f seconds; "
+                "new destination rejected for safety",
+                MISSION_REPLACE_JOIN_TIMEOUT)
+            self.publish_status("NAV_FAILED")
+            return False
+
+        self.active_thread = None
+        self.cancel_mission = False
+        self.waiting_for_item = False
+        rospy.loginfo(
+            "Previous mission stopped; starting replacement destinations: %s",
+            payload)
+        return True
 
     def command_callback(self, msg):
         try:
@@ -1183,6 +1227,7 @@ class DeliveryNavigator(object):
             if not self.paused:
                 self.resume_status = self.current_state
             self.paused = True
+            self.last_resume_command_wall_time = None
             self.client.cancel_goal()
             self.stop_robot()
             self.publish_status("PAUSED")
@@ -1193,6 +1238,7 @@ class DeliveryNavigator(object):
         if cmd == "SCENARIO_22":
             if self.paused:
                 self.paused = False
+                self.last_resume_command_wall_time = time.time()
                 resume_status = self.resume_status
                 if not resume_status or resume_status == "PAUSED":
                     resume_status = (
@@ -1220,9 +1266,28 @@ class DeliveryNavigator(object):
         if cmd not in ["SCENARIO_1", "SCENARIO_2", "SCENARIO_3", "SCENARIO_4", "SCENARIO_6"]:
             return
 
-        if self.active_thread and self.active_thread.is_alive():
-            rospy.logwarn("Mission already running. New command ignored: %s", payload)
+        valid_payload = [
+            room for room in payload
+            if normalize_room_name(room) in locations
+        ]
+        if not valid_payload:
+            rospy.logwarn(
+                "New mission ignored because it has no known destinations: %s",
+                payload)
             return
+
+        if self.active_thread and self.active_thread.is_alive():
+            resumed_recently = (
+                self.last_resume_command_wall_time is not None and
+                time.time() - self.last_resume_command_wall_time <=
+                MISSION_REPLACE_AFTER_RESUME_WINDOW)
+            if not self.paused and not resumed_recently:
+                rospy.logwarn(
+                    "Mission already running. New command ignored: %s",
+                    payload)
+                return
+            if not self.replace_active_mission(payload):
+                return
 
         self.active_thread = threading.Thread(target=self.run_delivery_journey, args=(payload,))
         self.active_thread.daemon = True
