@@ -207,6 +207,7 @@ class DeliveryNavigator(object):
         self.mission_lock = threading.Lock()
         self.active_thread = None
         self.paused = False
+        self.resume_status = "IDLE"
         self.cancel_mission = False
         self.item_received = False
         self.waiting_for_item = False
@@ -524,6 +525,19 @@ class DeliveryNavigator(object):
                     return False
                 if self.client.wait_for_result(rospy.Duration(0.2)):
                     state = self.client.get_state()
+                    if state in (GoalStatus.PREEMPTED,
+                                 GoalStatus.RECALLED):
+                        self.stop_robot()
+                        rospy.loginfo(
+                            "Navigation goal paused; waiting to resend the "
+                            "same destination")
+                        self.wait_while_paused()
+                        if self.cancel_mission or rospy.is_shutdown():
+                            return False
+                        rospy.loginfo(
+                            "Resuming navigation to %s",
+                            console_text(location_name))
+                        break
                     if state == GoalStatus.SUCCEEDED:
                         self.stop_robot()
                         print("[navi] arrived at {}".format(console_text(location_name)))
@@ -1117,17 +1131,30 @@ class DeliveryNavigator(object):
         rospy.loginfo("[LLM command] %s %s", cmd, payload)
 
         if cmd == "SCENARIO_21":
+            if not self.paused:
+                self.resume_status = self.current_state
             self.paused = True
             self.client.cancel_goal()
             self.stop_robot()
             self.publish_status("PAUSED")
+            rospy.loginfo(
+                "Mission paused without clearing the active destination")
             return
 
         if cmd == "SCENARIO_22":
             if self.paused:
                 self.paused = False
-                if self.current_target:
-                    self.publish_status("MOVING:{}".format(self.current_target))
+                resume_status = self.resume_status
+                if not resume_status or resume_status == "PAUSED":
+                    resume_status = (
+                        "MOVING:{}".format(self.current_target)
+                        if self.current_target else "MOVING")
+                self.publish_status(resume_status)
+                rospy.loginfo(
+                    "Mission resumed with status %s", resume_status)
+            else:
+                rospy.logwarn(
+                    "Resume command ignored because the mission is not paused")
             return
 
         if cmd == "SCENARIO_8":
