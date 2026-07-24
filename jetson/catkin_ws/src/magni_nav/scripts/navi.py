@@ -61,10 +61,10 @@ FINAL_XY_GOAL_TOLERANCE = 0.15
 # Use the front laser for the final approach. These values are only hard
 # travel limits; reaching the configured door clearance stops the robot first.
 LIDAR_APPROACH_MAX_DISTANCES = {
-    u"542호": 1.20,
-    u"542호_대형": 1.20,
-    u"544호": 1.20,
-    u"545호": 1.20,
+    u"542호": 2.00,
+    u"542호_대형": 2.00,
+    u"544호": 2.00,
+    u"545호": 2.00,
     u"543호": 1.00,
     u"540호": 1.00,
     u"541호": 1.00,
@@ -1100,17 +1100,6 @@ class DeliveryNavigator(object):
             return False
 
         initial_front_distance = self.front_scan_distance
-        maximum_start_range = (
-            LIDAR_DOOR_STOP_DISTANCE + maximum_distance)
-        if initial_front_distance > maximum_start_range:
-            rospy.logerr(
-                "%s refused: front surface is %.3f m away (limit %.3f m)",
-                description,
-                initial_front_distance,
-                maximum_start_range)
-            self.stop_robot()
-            return False
-
         if initial_front_distance <= LIDAR_DOOR_STOP_DISTANCE:
             self.stop_robot()
             print(
