@@ -87,6 +87,7 @@ CENTER_POSITION_TOLERANCES = {
 # room-side wall. Enter the measured center pose from the corridor centerline
 # so the large platform still has enough clearance for its final rotation.
 CENTER_ENTRY_DISTANCES = {
+    u"544호": 1.50,
     u"545호": 1.50,
 }
 CENTER_ENTRY_POSITION_TOLERANCE = 0.25
