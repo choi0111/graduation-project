@@ -7,7 +7,6 @@ import time
 
 import rospy
 from geometry_msgs.msg import Twist
-from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
 
 
@@ -27,18 +26,18 @@ class CorridorCentering(object):
             '~corridor_min_width', 1.60)
         self.corridor_max_width = rospy.get_param(
             '~corridor_max_width', 2.40)
-        self.width_calibration_samples = int(rospy.get_param(
-            '~width_calibration_samples', 20))
         self.expected_corridor_width = rospy.get_param(
             '~expected_corridor_width', 2.00)
-        self.calibration_width_tolerance = rospy.get_param(
-            '~calibration_width_tolerance', 0.20)
-        self.calibration_max_side_difference = rospy.get_param(
-            '~calibration_max_side_difference', 0.55)
-        self.calibration_min_travel = rospy.get_param(
-            '~calibration_min_travel', 0.25)
         self.corridor_width_tolerance = rospy.get_param(
             '~corridor_width_tolerance', 0.12)
+        self.normal_confirmation_samples = int(rospy.get_param(
+            '~normal_confirmation_samples', 8))
+        self.initial_side_tolerance = rospy.get_param(
+            '~initial_side_tolerance', 0.40)
+        self.single_wall_match_tolerance = rospy.get_param(
+            '~single_wall_match_tolerance', 0.30)
+        self.single_wall_selection_margin = rospy.get_param(
+            '~single_wall_selection_margin', 0.03)
         self.width_learning_alpha = rospy.get_param(
             '~width_learning_alpha', 0.02)
         self.minimum_samples = int(rospy.get_param(
@@ -73,18 +72,16 @@ class CorridorCentering(object):
         self.left_distance = None
         self.right_distance = None
         self.current_corridor_width = None
-        self.nominal_corridor_width = None
-        self.width_calibration_values = []
-        self.side_geometry_valid = False
+        self.nominal_corridor_width = self.expected_corridor_width
+        self.normal_confirmation_count = 0
+        self.normal_width_samples = []
+        self.normal_corridor_seen = False
+        self.wall_mode = 'none'
         self.last_scan_wall_time = None
-        self.odom_distance_travelled = 0.0
-        self.last_odom_position = None
 
         self.cmd_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         self.scan_sub = rospy.Subscriber(
             '/scan', LaserScan, self.scan_callback, queue_size=1)
-        self.odom_sub = rospy.Subscriber(
-            '/odom', Odometry, self.odom_callback, queue_size=10)
         self.cmd_sub = rospy.Subscriber(
             '/cmd_vel_nav', Twist, self.cmd_callback, queue_size=10)
 
@@ -96,19 +93,6 @@ class CorridorCentering(object):
             self.corridor_min_width,
             self.corridor_max_width,
             self.centering_gain)
-
-    def odom_callback(self, msg):
-        position = (
-            msg.pose.pose.position.x,
-            msg.pose.pose.position.y)
-        with self.lock:
-            if self.last_odom_position is not None:
-                step = math.hypot(
-                    position[0] - self.last_odom_position[0],
-                    position[1] - self.last_odom_position[1])
-                if step <= 0.20:
-                    self.odom_distance_travelled += step
-            self.last_odom_position = position
 
     @staticmethod
     def median(values):
@@ -162,76 +146,111 @@ class CorridorCentering(object):
                             right_samples.append(lateral_distance)
             angle += msg.angle_increment
 
-        if (len(left_samples) < self.minimum_samples or
-                len(right_samples) < self.minimum_samples):
-            with self.lock:
-                self.side_geometry_valid = False
-                if self.nominal_corridor_width is None:
-                    self.width_calibration_values = []
-            return
+        left = None
+        right = None
+        if len(left_samples) >= self.minimum_samples:
+            left = self.median(left_samples)
+        if len(right_samples) >= self.minimum_samples:
+            right = self.median(right_samples)
 
-        left = self.median(left_samples)
-        right = self.median(right_samples)
-        current_width = left + right
         with self.lock:
+            nominal_width = self.nominal_corridor_width
+            target_side_distance = nominal_width * 0.5
+            current_width = None
+            if left is not None and right is not None:
+                current_width = left + right
+
             self.current_corridor_width = current_width
-            self.side_geometry_valid = True
+            self.wall_mode = 'none'
             self.last_scan_wall_time = time.time()
-            if (self.corridor_min_width <= current_width <=
-                    self.corridor_max_width):
-                if self.nominal_corridor_width is None:
-                    calibration_candidate = (
-                        self.odom_distance_travelled >=
-                        self.calibration_min_travel and
-                        abs(current_width -
-                            self.expected_corridor_width) <=
-                        self.calibration_width_tolerance and
-                        abs(left - right) <=
-                        self.calibration_max_side_difference)
-                    if calibration_candidate:
-                        self.left_distance = self.filtered_distance(
-                            self.left_distance, left)
-                        self.right_distance = self.filtered_distance(
-                            self.right_distance, right)
-                        self.width_calibration_values.append(current_width)
-                        if (len(self.width_calibration_values) >=
-                                self.width_calibration_samples):
-                            self.nominal_corridor_width = self.median(
-                                self.width_calibration_values)
-                            rospy.loginfo(
-                                "corridor_centering calibrated normal width: "
-                                "%.3f m after %.3f m travel",
-                                self.nominal_corridor_width,
-                                self.odom_distance_travelled)
-                    else:
-                        self.width_calibration_values = []
-                        self.left_distance = None
-                        self.right_distance = None
-                        rospy.loginfo_throttle(
-                            2.0,
-                            "corridor_centering waiting for normal corridor: "
-                            "travel %.3f m, left %.3f right %.3f width %.3f",
-                            self.odom_distance_travelled,
-                            left,
-                            right,
-                            current_width)
-                elif (abs(current_width - self.nominal_corridor_width) <=
-                      self.corridor_width_tolerance):
-                    self.left_distance = self.filtered_distance(
-                        self.left_distance, left)
-                    self.right_distance = self.filtered_distance(
-                        self.right_distance, right)
-                    if (abs(current_width - self.nominal_corridor_width) <=
-                            self.corridor_width_tolerance * 0.5):
-                        alpha = self.width_learning_alpha
-                        self.nominal_corridor_width = (
-                            alpha * current_width +
-                            (1.0 - alpha) *
-                            self.nominal_corridor_width)
-            elif self.nominal_corridor_width is None:
-                self.width_calibration_values = []
-                self.left_distance = None
-                self.right_distance = None
+
+            normal_geometry = (
+                current_width is not None and
+                self.corridor_min_width <= current_width <=
+                self.corridor_max_width and
+                abs(current_width - nominal_width) <=
+                self.corridor_width_tolerance)
+
+            if not self.normal_corridor_seen:
+                initial_normal_geometry = (
+                    normal_geometry and
+                    abs(left - target_side_distance) <=
+                    self.initial_side_tolerance and
+                    abs(right - target_side_distance) <=
+                    self.initial_side_tolerance)
+                if initial_normal_geometry:
+                    self.normal_confirmation_count += 1
+                    self.normal_width_samples.append(current_width)
+                else:
+                    self.normal_confirmation_count = 0
+                    self.normal_width_samples = []
+
+                if (self.normal_confirmation_count >=
+                        self.normal_confirmation_samples):
+                    self.normal_corridor_seen = True
+                    self.nominal_corridor_width = self.median(
+                        self.normal_width_samples)
+                    self.left_distance = left
+                    self.right_distance = right
+                    self.wall_mode = 'both'
+                    rospy.loginfo(
+                        "corridor_centering acquired normal corridor: "
+                        "left %.3f right %.3f width %.3f",
+                        left,
+                        right,
+                        self.nominal_corridor_width)
+                return
+
+            if normal_geometry:
+                self.left_distance = self.filtered_distance(
+                    self.left_distance, left)
+                self.right_distance = self.filtered_distance(
+                    self.right_distance, right)
+                self.wall_mode = 'both'
+                if (abs(current_width - nominal_width) <=
+                        self.corridor_width_tolerance * 0.5):
+                    alpha = self.width_learning_alpha
+                    self.nominal_corridor_width = (
+                        alpha * current_width +
+                        (1.0 - alpha) * nominal_width)
+                return
+
+            opening_geometry = (
+                (left is None) != (right is None) or
+                (current_width is not None and
+                 current_width > nominal_width +
+                 self.corridor_width_tolerance))
+            if not opening_geometry:
+                return
+
+            wall_candidates = []
+            if left is not None and self.left_distance is not None:
+                left_change = abs(left - self.left_distance)
+                if left_change <= self.single_wall_match_tolerance:
+                    wall_candidates.append(('left', left_change))
+            if right is not None and self.right_distance is not None:
+                right_change = abs(right - self.right_distance)
+                if right_change <= self.single_wall_match_tolerance:
+                    wall_candidates.append(('right', right_change))
+
+            if not wall_candidates:
+                return
+
+            wall_candidates.sort(key=lambda item: item[1])
+            if (len(wall_candidates) > 1 and
+                    wall_candidates[1][1] - wall_candidates[0][1] <
+                    self.single_wall_selection_margin):
+                return
+
+            intact_side = wall_candidates[0][0]
+            if intact_side == 'left':
+                self.left_distance = self.filtered_distance(
+                    self.left_distance, left)
+                self.wall_mode = 'left'
+            else:
+                self.right_distance = self.filtered_distance(
+                    self.right_distance, right)
+                self.wall_mode = 'right'
 
     def copy_command(self, source):
         command = Twist()
@@ -251,36 +270,26 @@ class CorridorCentering(object):
             right = self.right_distance
             current_width = self.current_corridor_width
             nominal_width = self.nominal_corridor_width
-            side_geometry_valid = self.side_geometry_valid
+            wall_mode = self.wall_mode
+            normal_corridor_seen = self.normal_corridor_seen
             scan_time = self.last_scan_wall_time
 
         can_center = (
             msg.linear.x >= self.minimum_forward_speed and
             abs(msg.angular.z) <= self.maximum_input_angular_speed and
-            left is not None and
-            right is not None and
-            current_width is not None and
-            nominal_width is not None and
-            side_geometry_valid and
+            normal_corridor_seen and
+            wall_mode != 'none' and
             scan_time is not None and
             now - scan_time <= self.scan_timeout)
 
         if can_center:
-            can_center = (
-                self.corridor_min_width <= current_width <=
-                self.corridor_max_width and
-                abs(current_width - nominal_width) <=
-                self.corridor_width_tolerance)
-            if not can_center:
-                rospy.loginfo_throttle(
-                    2.0,
-                    "corridor_centering suspended at opening: "
-                    "width %.3f m, normal %.3f m",
-                    current_width,
-                    nominal_width)
+            if wall_mode == 'both':
+                center_error = left - right
+            elif wall_mode == 'left':
+                center_error = 2.0 * left - nominal_width
+            else:
+                center_error = nominal_width - 2.0 * right
 
-        if can_center:
-            center_error = left - right
             if abs(center_error) <= self.centering_deadband + 1e-6:
                 correction = 0.0
             else:
@@ -295,14 +304,34 @@ class CorridorCentering(object):
                 msg.angular.z + correction,
                 -self.maximum_output_angular_speed,
                 self.maximum_output_angular_speed)
+            if wall_mode == 'both':
+                left_text = "%.3f" % left
+                right_text = "%.3f" % right
+            elif wall_mode == 'left':
+                left_text = "%.3f" % left
+                right_text = "open"
+            else:
+                left_text = "open"
+                right_text = "%.3f" % right
             rospy.loginfo_throttle(
                 2.0,
-                "corridor_centering active: left %.3f right %.3f "
-                "error %.3f correction %.3f",
-                left,
-                right,
+                "corridor_centering active (%s): left %s right %s "
+                "width %s error %.3f correction %.3f",
+                wall_mode,
+                left_text,
+                right_text,
+                ("%.3f" % current_width
+                 if current_width is not None else "open"),
                 center_error,
                 correction)
+        elif (msg.linear.x >= self.minimum_forward_speed and
+              abs(msg.angular.z) <= self.maximum_input_angular_speed):
+            rospy.loginfo_throttle(
+                2.0,
+                "corridor_centering unavailable (%s); passing DWA command",
+                ("normal corridor not acquired"
+                 if not normal_corridor_seen else
+                 "no trustworthy corridor wall"))
 
         self.cmd_pub.publish(command)
 
