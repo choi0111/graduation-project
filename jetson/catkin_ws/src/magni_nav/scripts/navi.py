@@ -60,10 +60,10 @@ FINAL_XY_GOAL_TOLERANCE = 0.15
 # Use the front laser for the final approach. These values are only hard
 # travel limits; reaching the configured door clearance stops the robot first.
 LIDAR_APPROACH_MAX_DISTANCES = {
-    u"542호": 1.00,
-    u"542호_대형": 1.00,
-    u"544호": 1.00,
-    u"545호": 1.00,
+    u"542호": 1.20,
+    u"542호_대형": 1.20,
+    u"544호": 1.20,
+    u"545호": 1.20,
     u"543호": 1.00,
     u"540호": 1.00,
     u"541호": 1.00,
@@ -73,10 +73,10 @@ LIDAR_APPROACH_MAX_DISTANCES = {
 # check. Accept the measured staging position here; navi performs the precise
 # room-facing rotation immediately afterward.
 CENTER_POSITION_TOLERANCES = {
-    u"542호": 0.45,
-    u"542호_대형": 0.45,
-    u"544호": 0.45,
-    u"545호": 0.45,
+    u"542호": 0.25,
+    u"542호_대형": 0.25,
+    u"544호": 0.25,
+    u"545호": 0.25,
     u"543호": 0.90,
     u"540호": 0.90,
     u"541호": 0.90,
@@ -84,7 +84,7 @@ CENTER_POSITION_TOLERANCES = {
 }
 COARSE_GOAL_FALLBACK_MARGIN = 0.10
 STAGING_LINE_ALONG_TOLERANCE = 0.20
-STAGING_LINE_CROSS_TOLERANCE = 0.40
+STAGING_LINE_CROSS_TOLERANCE = 0.20
 STAGING_LINE_MISS_STOP_TOLERANCE = 0.10
 GOAL_PROGRESS_LOG_INTERVAL = 1.0
 LIDAR_TO_FRONT_EDGE = 0.11
