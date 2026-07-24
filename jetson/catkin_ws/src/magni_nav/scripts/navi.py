@@ -200,6 +200,8 @@ class DeliveryNavigator(object):
         self.amcl_position = None
         self.amcl_yaw = None
         self.last_amcl_wall_time = None
+        self.has_received_amcl_pose = False
+        self.home_localization_bootstrap_available = True
         self.front_scan_distance = None
         self.rotation_clearance_distance = None
         self.last_front_scan_wall_time = None
@@ -268,6 +270,8 @@ class DeliveryNavigator(object):
         self.amcl_position = (position.x, position.y)
         self.amcl_yaw = quaternion_to_yaw(msg.pose.pose.orientation)
         self.last_amcl_wall_time = time.time()
+        self.has_received_amcl_pose = True
+        self.home_localization_bootstrap_available = False
 
     def scan_callback(self, msg):
         forward_distances = []
@@ -749,6 +753,22 @@ class DeliveryNavigator(object):
             NEXT_GOAL_ALIGN_TIMEOUT)
 
     def align_first_destination_if_behind(self, room_name):
+        if (not self.has_received_amcl_pose and
+                self.home_localization_bootstrap_available):
+            if (self.wait_for_fresh_odom(ODOM_WAIT_TIMEOUT) and
+                    math.hypot(
+                        self.odom_position[0],
+                        self.odom_position[1]) <= 0.05):
+                self.amcl_position = (
+                    self.home_pose[0],
+                    self.home_pose[1])
+                self.amcl_yaw = self.home_yaw
+                self.last_amcl_wall_time = time.time()
+                self.home_localization_bootstrap_available = False
+                rospy.logwarn(
+                    "No /amcl_pose received before the first mission; "
+                    "using the configured fixed home pose once")
+
         if not self.prepare_direct_alignment("initial-destination alignment"):
             return False
 
