@@ -30,10 +30,11 @@ Run autonomous driving, voice navigation, and the LLM process together:
 robot_start
 ```
 
-In voice-command mode, the robot waits up to 20 seconds at each destination.
-An `SCENARIO_8` receipt command advances immediately; otherwise the delivery is
-marked unattended and the robot advances after the timeout. After the final
-destination, the robot backs away and returns to the fixed AMCL initial pose.
+In voice-command mode, the 20-second receipt timer starts after the destination
+arrival TTS finishes. An `SCENARIO_8` receipt command advances immediately;
+otherwise the delivery is marked unattended and the robot advances after the
+timeout. After the final destination, the robot backs away and returns to the
+fixed AMCL initial pose.
 `SCENARIO_21` pauses without discarding the active destination, and
 `SCENARIO_22` replans and resumes that same mission.
 

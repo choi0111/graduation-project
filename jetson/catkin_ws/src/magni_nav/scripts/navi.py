@@ -125,11 +125,15 @@ NEXT_GOAL_MAX_ANGULAR_SPEED = 0.08
 NEXT_GOAL_ALIGN_TIMEOUT = 50.0
 INITIAL_GOAL_BEHIND_ANGLE = math.pi * 0.5
 ITEM_RECEIPT_TIMEOUT = 20.0
+ITEM_PROMPT_TTS_WAIT_TIMEOUT = 30.0
 HOME_LOCATION_NAME = u"initial_home"
 HOME_XY_GOAL_TOLERANCE = 0.20
 HOME_POSITION_VERIFY_TOLERANCE = 0.25
 HOME_YAW_VERIFY_TOLERANCE = math.radians(4.0)
 HOME_ALIGNMENT_MAX_ATTEMPTS = 2
+HOME_TURN_DIRECTION_MIN_ANGLE = math.radians(150.0)
+SIDE_CLEARANCE_MIN_ANGLE = math.radians(45.0)
+SIDE_CLEARANCE_MAX_ANGLE = math.radians(135.0)
 MISSION_REPLACE_AFTER_RESUME_WINDOW = 3.0
 MISSION_REPLACE_JOIN_TIMEOUT = 3.0
 MISSION_REPLACE_RESUME_GRACE = 2.0
@@ -219,11 +223,15 @@ class DeliveryNavigator(object):
         self.home_localization_bootstrap_available = True
         self.front_scan_distance = None
         self.rotation_clearance_distance = None
+        self.left_rotation_clearance_distance = None
+        self.right_rotation_clearance_distance = None
         self.last_front_scan_wall_time = None
         self.front_scan_sequence = 0
         cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         self.status_pub = rospy.Publisher('/robot_status', String, queue_size=10)
         self.command_sub = rospy.Subscriber('/llm_command', String, self.command_callback)
+        self.tts_event_sub = rospy.Subscriber(
+            '/tts_event', String, self.tts_event_callback)
         self.odom_sub = rospy.Subscriber('/odom', Odometry, self.odom_callback)
         self.amcl_sub = rospy.Subscriber(
             '/amcl_pose', PoseWithCovarianceStamped, self.amcl_callback)
@@ -241,6 +249,7 @@ class DeliveryNavigator(object):
         self.cancel_mission = False
         self.item_received = False
         self.waiting_for_item = False
+        self.item_prompt_tts_done = threading.Event()
         self.current_state = "IDLE"
         self.current_target = ""
         self.shutdown_started = False
@@ -328,9 +337,27 @@ class DeliveryNavigator(object):
             self.last_amcl_odom_position = self.odom_position
             self.last_amcl_odom_yaw = self.odom_yaw
 
+    def tts_event_callback(self, msg):
+        if (msg.data.strip().upper() == "SCENARIO_5_DONE" and
+                self.waiting_for_item):
+            self.item_prompt_tts_done.set()
+            rospy.loginfo(
+                "[WAITING] arrival TTS completed; receipt timer may start")
+
+    def directional_clearance(self, distances):
+        if not distances:
+            return None
+        distances.sort()
+        index = min(
+            ROTATION_CLEARANCE_REQUIRED_POINTS - 1,
+            len(distances) - 1)
+        return distances[index]
+
     def scan_callback(self, msg):
         forward_distances = []
         clearance_distances = []
+        left_clearance_distances = []
+        right_clearance_distances = []
         angle = msg.angle_min
         for measured_range in msg.ranges:
             if (not math.isnan(measured_range) and
@@ -338,6 +365,11 @@ class DeliveryNavigator(object):
                     measured_range >= msg.range_min and
                     measured_range <= msg.range_max):
                 clearance_distances.append(measured_range)
+                if SIDE_CLEARANCE_MIN_ANGLE <= angle <= SIDE_CLEARANCE_MAX_ANGLE:
+                    left_clearance_distances.append(measured_range)
+                elif (-SIDE_CLEARANCE_MAX_ANGLE <= angle <=
+                      -SIDE_CLEARANCE_MIN_ANGLE):
+                    right_clearance_distances.append(measured_range)
                 if abs(angle) <= FRONT_SCAN_HALF_ANGLE:
                     forward_distance = measured_range * math.cos(angle)
                     if forward_distance > 0.0:
@@ -362,6 +394,10 @@ class DeliveryNavigator(object):
             ROTATION_CLEARANCE_REQUIRED_POINTS - 1,
             len(clearance_distances) - 1)
         self.rotation_clearance_distance = clearance_distances[clearance_index]
+        self.left_rotation_clearance_distance = self.directional_clearance(
+            left_clearance_distances)
+        self.right_rotation_clearance_distance = self.directional_clearance(
+            right_clearance_distances)
         self.last_front_scan_wall_time = time.time()
         self.front_scan_sequence += 1
 
@@ -710,7 +746,8 @@ class DeliveryNavigator(object):
     def rotate_to_map_yaw(self, target_name, target_yaw, action_text,
                           min_angular_speed=ALIGN_MIN_ANGULAR_SPEED,
                           max_angular_speed=ALIGN_MAX_ANGULAR_SPEED,
-                          timeout=ALIGN_TIMEOUT):
+                          timeout=ALIGN_TIMEOUT,
+                          preferred_turn_direction=None):
         if not self.wait_for_fresh_front_scan(FRONT_SCAN_WAIT_TIMEOUT):
             rospy.logerr(
                 "Fresh /scan data is required before direct rotation")
@@ -729,7 +766,14 @@ class DeliveryNavigator(object):
             return False
 
         required_rotation = normalize_angle(target_yaw - self.amcl_yaw)
-        start_odom_yaw = self.odom_yaw
+        if (preferred_turn_direction is not None and
+                abs(required_rotation) >= HOME_TURN_DIRECTION_MIN_ANGLE):
+            if preferred_turn_direction > 0 and required_rotation < 0:
+                required_rotation += 2.0 * math.pi
+            elif preferred_turn_direction < 0 and required_rotation > 0:
+                required_rotation -= 2.0 * math.pi
+        last_odom_yaw = self.odom_yaw
+        accumulated_rotation = 0.0
         start_time = time.time()
         rate = rospy.Rate(20)
 
@@ -772,8 +816,10 @@ class DeliveryNavigator(object):
                 self.stop_robot()
                 return False
 
-            rotated = normalize_angle(self.odom_yaw - start_odom_yaw)
-            error = normalize_angle(required_rotation - rotated)
+            odom_step = normalize_angle(self.odom_yaw - last_odom_yaw)
+            accumulated_rotation += odom_step
+            last_odom_yaw = self.odom_yaw
+            error = required_rotation - accumulated_rotation
             if abs(error) <= ALIGN_YAW_TOLERANCE:
                 self.stop_robot()
                 print("[navi] rotation complete (error {:.1f} deg)".format(
@@ -833,6 +879,23 @@ class DeliveryNavigator(object):
             NEXT_GOAL_MIN_ANGULAR_SPEED,
             NEXT_GOAL_MAX_ANGULAR_SPEED,
             NEXT_GOAL_ALIGN_TIMEOUT)
+
+    def preferred_home_turn_direction(self):
+        left = self.left_rotation_clearance_distance
+        right = self.right_rotation_clearance_distance
+        if left is None or right is None:
+            rospy.logwarn(
+                "Side clearance is unavailable; using the shortest home turn")
+            return None
+
+        direction = 1 if left >= right else -1
+        rospy.loginfo(
+            "Initial-position turn clearance: left %.3f m, right %.3f m; "
+            "choosing %s",
+            left,
+            right,
+            "left" if direction > 0 else "right")
+        return direction
 
     def refresh_cached_localization_from_odom(self):
         if (self.amcl_position is None or
@@ -1218,10 +1281,38 @@ class DeliveryNavigator(object):
     def wait_for_item(self, room_name, has_next):
         self.item_received = False
         self.waiting_for_item = True
+        self.item_prompt_tts_done.clear()
         self.publish_status("ARRIVED:{}".format(room_for_status(room_name)))
         self.status_pub.publish("SCENARIO_5")
         rospy.loginfo(
-            "[WAITING] 물품 수령 확인을 위해 %.0f초 대기합니다.",
+            "[WAITING] 도착 안내 TTS 완료 신호를 기다립니다.")
+
+        tts_deadline = time.time() + ITEM_PROMPT_TTS_WAIT_TIMEOUT
+        while (not self.item_prompt_tts_done.is_set() and
+               not rospy.is_shutdown()):
+            if self.cancel_mission:
+                self.waiting_for_item = False
+                return False
+            if self.paused:
+                self.wait_while_paused()
+                continue
+            if self.item_received:
+                break
+            if time.time() >= tts_deadline:
+                rospy.logwarn(
+                    "Arrival TTS completion signal timed out after %.0f "
+                    "seconds; starting the receipt timer as a fallback",
+                    ITEM_PROMPT_TTS_WAIT_TIMEOUT)
+                break
+            rospy.sleep(0.1)
+
+        if rospy.is_shutdown():
+            self.waiting_for_item = False
+            return False
+
+        rospy.loginfo(
+            "[WAITING] 도착 안내 종료. 지금부터 물품 수령 확인을 위해 "
+            "%.0f초 대기합니다.",
             ITEM_RECEIPT_TIMEOUT)
 
         remaining_time = ITEM_RECEIPT_TIMEOUT
@@ -1316,7 +1407,8 @@ class DeliveryNavigator(object):
                     "aligning at initial position",
                     NEXT_GOAL_MIN_ANGULAR_SPEED,
                     NEXT_GOAL_MAX_ANGULAR_SPEED,
-                    NEXT_GOAL_ALIGN_TIMEOUT):
+                    NEXT_GOAL_ALIGN_TIMEOUT,
+                    self.preferred_home_turn_direction()):
                 return False
             self.stop_robot()
             rospy.sleep(0.5)

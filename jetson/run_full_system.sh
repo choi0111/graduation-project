@@ -5,7 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 CATKIN_WS="${SCRIPT_DIR}/catkin_ws"
 LLM_DIR="${LLM_DIR:-${HOME}/llm}"
-LLM_ENTRYPOINT="${LLM_ENTRYPOINT:-main.py}"
+LLM_ENTRYPOINT="${LLM_ENTRYPOINT:-${SCRIPT_DIR}/llm/main.py}"
+if [[ "${LLM_ENTRYPOINT}" = /* ]]; then
+  LLM_ENTRYPOINT_PATH="${LLM_ENTRYPOINT}"
+else
+  LLM_ENTRYPOINT_PATH="${LLM_DIR}/${LLM_ENTRYPOINT}"
+fi
 
 ROSLAUNCH_PID=""
 NAVI_PID=""
@@ -69,17 +74,21 @@ catkin_make
 source "${CATKIN_WS}/devel/setup.bash"
 
 REQUIRED_LLM_FILES=(
-  "${LLM_ENTRYPOINT}"
   "llm_module2.py"
   "config.py"
   "realtime_stt2.py"
   "tts_module2.py"
 )
 
+if [ ! -f "${LLM_ENTRYPOINT_PATH}" ]; then
+  echo "robot_start: LLM entrypoint not found: ${LLM_ENTRYPOINT_PATH}" >&2
+  exit 1
+fi
+
 for required_file in "${REQUIRED_LLM_FILES[@]}"; do
   if [ ! -f "${LLM_DIR}/${required_file}" ]; then
     echo "robot_start: required LLM file not found: ${LLM_DIR}/${required_file}" >&2
-    echo "main_node.py is not used. Keep the five required Python files in LLM_DIR." >&2
+    echo "main.py is managed by the repository; keep the four support modules in LLM_DIR." >&2
     exit 1
   fi
 done
@@ -118,10 +127,11 @@ if ! kill -0 "${NAVI_PID}" 2>/dev/null; then
   exit 1
 fi
 
-echo "robot_start: starting ${LLM_DIR}/${LLM_ENTRYPOINT}..."
+echo "robot_start: starting ${LLM_ENTRYPOINT_PATH}..."
 (
   cd "${LLM_DIR}"
-  exec "${LLM_PYTHON}" "${LLM_ENTRYPOINT}"
+  export PYTHONPATH="${LLM_DIR}${PYTHONPATH:+:${PYTHONPATH}}"
+  exec "${LLM_PYTHON}" "${LLM_ENTRYPOINT_PATH}"
 ) &
 LLM_PID=$!
 sleep 1.0

@@ -60,8 +60,8 @@ Run autonomous driving:
 autodrive
 ```
 
-Run autonomous driving, `navi.py`, and `~/llm/main.py` together in one
-terminal:
+Run autonomous driving, `navi.py`, and the repository-managed LLM entrypoint
+together in one terminal:
 
 ```bash
 robot_start
@@ -79,20 +79,23 @@ separate MSI network script.
 
 `robot_start` waits for `/move_base/status`, `/scan`, and `/odom` before
 starting voice navigation. Press `Ctrl+C` once to stop all three processes.
-It uses `~/llm/venv`, then `~/llm/.venv`, and finally the system `python3`.
+It runs `jetson/llm/main.py` with `~/llm` as the working/module directory and
+uses `~/llm/venv`, then `~/llm/.venv`, and finally the system `python3`.
 
-The LLM directory must contain these five Python files:
+The local LLM directory must contain these four supporting Python files:
 
 ```text
-main.py
 llm_module2.py
 config.py
 realtime_stt2.py
 tts_module2.py
 ```
 
-`main_node.py` is not used. Runtime assets such as `silero_vad.onnx`,
-`sounds/`, and `.env` remain in the same LLM directory.
+`~/llm/main.py` and `main_node.py` are not used by `robot_start`. Runtime
+assets such as `silero_vad.onnx`, `sounds/`, and `.env` remain in the same LLM
+directory. The managed entrypoint publishes `/tts_event` after the destination
+arrival announcement finishes, and only then does `navi.py` begin the
+20-second receipt timer.
 
 Store the API key only in the Jetson's local `~/llm/.env` file:
 
