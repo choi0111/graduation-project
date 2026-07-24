@@ -200,7 +200,6 @@ class DeliveryNavigator(object):
         self.amcl_position = None
         self.amcl_yaw = None
         self.last_amcl_wall_time = None
-        self.has_received_amcl_pose = False
         self.home_localization_bootstrap_available = True
         self.front_scan_distance = None
         self.rotation_clearance_distance = None
@@ -270,8 +269,6 @@ class DeliveryNavigator(object):
         self.amcl_position = (position.x, position.y)
         self.amcl_yaw = quaternion_to_yaw(msg.pose.pose.orientation)
         self.last_amcl_wall_time = time.time()
-        self.has_received_amcl_pose = True
-        self.home_localization_bootstrap_available = False
 
     def scan_callback(self, msg):
         forward_distances = []
@@ -753,9 +750,15 @@ class DeliveryNavigator(object):
             NEXT_GOAL_ALIGN_TIMEOUT)
 
     def align_first_destination_if_behind(self, room_name):
-        if (not self.has_received_amcl_pose and
-                self.home_localization_bootstrap_available):
-            if self.wait_for_fresh_odom(ODOM_WAIT_TIMEOUT):
+        localization_is_fresh = (
+            self.amcl_position is not None and
+            self.amcl_yaw is not None and
+            self.last_amcl_wall_time is not None and
+            time.time() - self.last_amcl_wall_time <= AMCL_STALE_TIMEOUT)
+        if self.home_localization_bootstrap_available:
+            if localization_is_fresh:
+                self.home_localization_bootstrap_available = False
+            elif self.wait_for_fresh_odom(ODOM_WAIT_TIMEOUT):
                 self.amcl_position = (
                     self.home_pose[0],
                     self.home_pose[1])
