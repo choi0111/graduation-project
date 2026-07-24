@@ -1143,6 +1143,12 @@ class DeliveryNavigator(object):
 
             self.current_target = room_for_status(room)
             self.publish_status("MOVING:{}".format(self.current_target))
+            if index == 0 and not self.align_first_destination_if_behind(room):
+                self.stop_robot()
+                if self.cancel_mission:
+                    return
+                self.publish_status("NAV_FAILED")
+                return
             success = self.move_to_room(room)
             if not success:
                 self.stop_robot()
