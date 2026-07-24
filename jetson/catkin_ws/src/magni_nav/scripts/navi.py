@@ -128,6 +128,9 @@ HOME_LOCATION_NAME = u"initial_home"
 HOME_XY_GOAL_TOLERANCE = 0.50
 MISSION_REPLACE_AFTER_RESUME_WINDOW = 3.0
 MISSION_REPLACE_JOIN_TIMEOUT = 3.0
+CACHED_AMCL_ALIGNMENT_MAX_AGE = 600.0
+CACHED_AMCL_ALIGNMENT_MAX_ODOM_DISTANCE = 0.25
+CACHED_AMCL_ALIGNMENT_MAX_ODOM_YAW = math.radians(20.0)
 
 try:
     text_type = unicode
@@ -200,6 +203,8 @@ class DeliveryNavigator(object):
         self.amcl_position = None
         self.amcl_yaw = None
         self.last_amcl_wall_time = None
+        self.last_amcl_odom_position = None
+        self.last_amcl_odom_yaw = None
         self.home_localization_bootstrap_available = True
         self.front_scan_distance = None
         self.rotation_clearance_distance = None
@@ -269,6 +274,9 @@ class DeliveryNavigator(object):
         self.amcl_position = (position.x, position.y)
         self.amcl_yaw = quaternion_to_yaw(msg.pose.pose.orientation)
         self.last_amcl_wall_time = time.time()
+        if self.odom_position is not None and self.odom_yaw is not None:
+            self.last_amcl_odom_position = self.odom_position
+            self.last_amcl_odom_yaw = self.odom_yaw
 
     def scan_callback(self, msg):
         forward_distances = []
@@ -749,6 +757,73 @@ class DeliveryNavigator(object):
             NEXT_GOAL_MAX_ANGULAR_SPEED,
             NEXT_GOAL_ALIGN_TIMEOUT)
 
+    def refresh_cached_localization_from_odom(self):
+        if (self.amcl_position is None or
+                self.amcl_yaw is None or
+                self.last_amcl_wall_time is None or
+                self.last_amcl_odom_position is None or
+                self.last_amcl_odom_yaw is None or
+                self.odom_position is None or
+                self.odom_yaw is None or
+                self.last_odom_wall_time is None):
+            return False
+
+        now = time.time()
+        amcl_age = now - self.last_amcl_wall_time
+        if (amcl_age > CACHED_AMCL_ALIGNMENT_MAX_AGE or
+                now - self.last_odom_wall_time > ODOM_STALE_TIMEOUT):
+            return False
+
+        odom_dx = (
+            self.odom_position[0] -
+            self.last_amcl_odom_position[0])
+        odom_dy = (
+            self.odom_position[1] -
+            self.last_amcl_odom_position[1])
+        odom_distance = math.hypot(odom_dx, odom_dy)
+        odom_yaw_delta = normalize_angle(
+            self.odom_yaw - self.last_amcl_odom_yaw)
+        if (odom_distance > CACHED_AMCL_ALIGNMENT_MAX_ODOM_DISTANCE or
+                abs(odom_yaw_delta) >
+                CACHED_AMCL_ALIGNMENT_MAX_ODOM_YAW):
+            rospy.logerr(
+                "Cached AMCL pose cannot be reused: odom changed %.3f m, "
+                "%.1f deg",
+                odom_distance,
+                math.degrees(odom_yaw_delta))
+            return False
+
+        anchor_odom_yaw = self.last_amcl_odom_yaw
+        local_dx = (
+            math.cos(anchor_odom_yaw) * odom_dx +
+            math.sin(anchor_odom_yaw) * odom_dy)
+        local_dy = (
+            -math.sin(anchor_odom_yaw) * odom_dx +
+            math.cos(anchor_odom_yaw) * odom_dy)
+        anchor_map_yaw = self.amcl_yaw
+        map_dx = (
+            math.cos(anchor_map_yaw) * local_dx -
+            math.sin(anchor_map_yaw) * local_dy)
+        map_dy = (
+            math.sin(anchor_map_yaw) * local_dx +
+            math.cos(anchor_map_yaw) * local_dy)
+
+        self.amcl_position = (
+            self.amcl_position[0] + map_dx,
+            self.amcl_position[1] + map_dy)
+        self.amcl_yaw = normalize_angle(
+            self.amcl_yaw + odom_yaw_delta)
+        self.last_amcl_wall_time = now
+        self.last_amcl_odom_position = self.odom_position
+        self.last_amcl_odom_yaw = self.odom_yaw
+        rospy.logwarn(
+            "Using cached paused AMCL pose with odom correction "
+            "(age %.1f s, delta %.3f m, %.1f deg)",
+            amcl_age,
+            odom_distance,
+            math.degrees(odom_yaw_delta))
+        return True
+
     def align_first_destination_if_behind(self, room_name):
         localization_is_fresh = (
             self.amcl_position is not None and
@@ -768,6 +843,8 @@ class DeliveryNavigator(object):
                 rospy.logwarn(
                     "No /amcl_pose received before the first mission; "
                     "using the configured fixed home pose once")
+        elif not localization_is_fresh:
+            self.refresh_cached_localization_from_odom()
 
         if not self.prepare_direct_alignment("initial-destination alignment"):
             return False
