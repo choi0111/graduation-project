@@ -56,6 +56,7 @@ cmd_vel_pub = None
 
 CENTER_XY_GOAL_TOLERANCE = 1.00
 FINAL_XY_GOAL_TOLERANCE = 0.15
+CENTER_RECENTER_TOLERANCE = 0.15
 
 # The large platform cannot safely use the old Magni room poses near the wall.
 # Use the front laser for the final approach. These values are only hard
@@ -97,6 +98,7 @@ FRONT_SCAN_STALE_TIMEOUT = 0.5
 FRONT_SCAN_REQUIRED_STOPS = 3
 ROBOT_HALF_WIDTH = 0.385
 ROBOT_REAR_FROM_LIDAR = 0.52
+ROBOT_SELF_FILTER_MARGIN = 0.03
 ROTATION_CLEARANCE_MARGIN = 0.03
 ROTATION_CLEARANCE_RADIUS = (
     math.hypot(ROBOT_HALF_WIDTH, ROBOT_REAR_FROM_LIDAR) +
@@ -289,9 +291,7 @@ class DeliveryNavigator(object):
             state = self.client.get_state()
             if state in (
                     GoalStatus.PENDING,
-                    GoalStatus.ACTIVE,
-                    GoalStatus.PREEMPTING,
-                    GoalStatus.RECALLING):
+                    GoalStatus.ACTIVE):
                 self.client.cancel_goal()
         except Exception as exc:
             rospy.logwarn("Failed to inspect/cancel active move_base goal: %s", exc)
@@ -352,6 +352,14 @@ class DeliveryNavigator(object):
             len(distances) - 1)
         return distances[index]
 
+    def is_robot_self_return(self, measured_range, angle):
+        point_x = measured_range * math.cos(angle)
+        point_y = measured_range * math.sin(angle)
+        return (
+            -ROBOT_REAR_FROM_LIDAR - ROBOT_SELF_FILTER_MARGIN <= point_x <=
+            LIDAR_TO_FRONT_EDGE + ROBOT_SELF_FILTER_MARGIN and
+            abs(point_y) <= ROBOT_HALF_WIDTH + ROBOT_SELF_FILTER_MARGIN)
+
     def scan_callback(self, msg):
         forward_distances = []
         clearance_distances = []
@@ -363,6 +371,9 @@ class DeliveryNavigator(object):
                     not math.isinf(measured_range) and
                     measured_range >= msg.range_min and
                     measured_range <= msg.range_max):
+                if self.is_robot_self_return(measured_range, angle):
+                    angle += msg.angle_increment
+                    continue
                 clearance_distances.append(measured_range)
                 if SIDE_CLEARANCE_MIN_ANGLE <= angle <= SIDE_CLEARANCE_MAX_ANGLE:
                     left_clearance_distances.append(measured_range)
@@ -528,7 +539,7 @@ class DeliveryNavigator(object):
         if distance is None:
             return 0
         if distance <= tolerance:
-            self.client.cancel_goal()
+            self.cancel_goal_if_active()
             self.stop_robot()
             print("[navi] arrived at {} (position {:.3f} m)".format(
                 console_text(location_name), distance))
@@ -542,7 +553,7 @@ class DeliveryNavigator(object):
         along_error, cross_error = line_errors
         if (along_error <= STAGING_LINE_ALONG_TOLERANCE and
                 cross_error <= STAGING_LINE_CROSS_TOLERANCE):
-            self.client.cancel_goal()
+            self.cancel_goal_if_active()
             self.stop_robot()
             print(
                 "[navi] arrived at {} (staging line: along {:.3f} m, "
@@ -850,6 +861,64 @@ class DeliveryNavigator(object):
         target_yaw = self.pose_yaw(room_pose)
         return self.rotate_to_map_yaw(
             room_name, target_yaw, "fine-aligning toward")
+
+    def rotation_clearance_is_safe(self):
+        return (
+            self.rotation_clearance_distance is not None and
+            self.rotation_clearance_distance >= ROTATION_CLEARANCE_RADIUS)
+
+    def ensure_room_rotation_clearance(self, room_name, center_target,
+                                       center_pose):
+        if not self.wait_for_fresh_front_scan(FRONT_SCAN_WAIT_TIMEOUT):
+            rospy.logerr(
+                "Fresh /scan data is required before checking room rotation")
+            self.stop_robot()
+            return False
+        if self.rotation_clearance_is_safe():
+            return True
+
+        rospy.logwarn(
+            "%s rotation clearance is %.3f m (required %.3f m); "
+            "re-centering at %s",
+            console_text(room_name),
+            self.rotation_clearance_distance
+            if self.rotation_clearance_distance is not None else -1.0,
+            ROTATION_CLEARANCE_RADIUS,
+            console_text(center_target))
+        if not self.set_xy_goal_tolerance(CENTER_RECENTER_TOLERANCE):
+            return False
+
+        recenter_name = u"{}_recenter".format(center_target)
+        if not self.move_to_goal(
+                recenter_name,
+                center_pose,
+                CENTER_RECENTER_TOLERANCE):
+            rospy.logerr(
+                "Failed to re-center %s before room-facing rotation",
+                console_text(room_name))
+            return False
+
+        self.stop_robot()
+        rospy.sleep(0.5)
+        if not self.wait_for_fresh_front_scan(FRONT_SCAN_WAIT_TIMEOUT):
+            rospy.logerr(
+                "Fresh /scan data is required after re-centering %s",
+                console_text(room_name))
+            return False
+        if not self.rotation_clearance_is_safe():
+            rospy.logerr(
+                "%s rotation remains unsafe after re-centering: "
+                "%.3f m available, %.3f m required",
+                console_text(room_name),
+                self.rotation_clearance_distance
+                if self.rotation_clearance_distance is not None else -1.0,
+                ROTATION_CLEARANCE_RADIUS)
+            self.stop_robot()
+            return False
+
+        print("[navi] {} rotation clearance restored at {:.3f} m".format(
+            console_text(room_name), self.rotation_clearance_distance))
+        return True
 
     def navigation_target_for(self, room_name):
         center_target = room_name + u"_중앙"
@@ -1249,6 +1318,10 @@ class DeliveryNavigator(object):
             rospy.sleep(1.0)
 
         if room_name in LIDAR_APPROACH_MAX_DISTANCES:
+            if (has_center_target and
+                    not self.ensure_room_rotation_clearance(
+                        room_name, center_target, center_pose)):
+                return False
             if not self.align_to_room(
                     room_name, locations[room_name]):
                 return False
