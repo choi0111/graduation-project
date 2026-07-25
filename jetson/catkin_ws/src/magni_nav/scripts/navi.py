@@ -1393,6 +1393,15 @@ class DeliveryNavigator(object):
             return True
 
         target_yaw = math.atan2(delta_y, delta_x)
+        heading_error = normalize_angle(target_yaw - self.amcl_yaw)
+        if abs(heading_error) <= ALIGN_YAW_TOLERANCE:
+            print(
+                "[navi] already aligned toward {} ({:.1f} deg error)".format(
+                    console_text(room_name),
+                    math.degrees(heading_error)))
+            self.stop_robot()
+            return True
+
         return self.rotate_to_map_yaw(
             room_name,
             target_yaw,
@@ -1901,8 +1910,19 @@ class DeliveryNavigator(object):
             return False
         rospy.sleep(0.5)
 
+        # Turn first, then clear side-wall history. Resetting before this turn
+        # lets scans from the old travel direction repopulate the left/right
+        # wall state and can invert the first centering correction after a
+        # 180-degree homeward turn.
+        if not self.align_toward_destination(HOME_LOCATION_NAME):
+            rospy.logerr(
+                "Failed to align toward the initial position before return")
+            return False
         self.stop_robot()
         self.reset_corridor_direction_state()
+        rospy.loginfo(
+            "Home-return heading aligned; corridor centering will reacquire "
+            "walls in the return direction")
 
         if not self.set_xy_goal_tolerance(HOME_POSITION_VERIFY_TOLERANCE):
             return False
