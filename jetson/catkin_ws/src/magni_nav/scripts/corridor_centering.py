@@ -21,7 +21,7 @@ class CorridorCentering(object):
         self.side_min_distance = rospy.get_param(
             '~side_min_distance', 0.35)
         self.side_max_distance = rospy.get_param(
-            '~side_max_distance', 1.65)
+            '~side_max_distance', 2.30)
         self.corridor_min_width = rospy.get_param(
             '~corridor_min_width', 1.60)
         self.corridor_max_width = rospy.get_param(
@@ -30,10 +30,12 @@ class CorridorCentering(object):
             '~expected_corridor_width', 2.00)
         self.corridor_width_tolerance = rospy.get_param(
             '~corridor_width_tolerance', 0.12)
+        self.acquisition_width_spread = rospy.get_param(
+            '~acquisition_width_spread', 0.10)
+        self.wall_flatness_tolerance = rospy.get_param(
+            '~wall_flatness_tolerance', 0.10)
         self.normal_confirmation_samples = int(rospy.get_param(
             '~normal_confirmation_samples', 8))
-        self.initial_side_tolerance = rospy.get_param(
-            '~initial_side_tolerance', 0.40)
         self.single_wall_match_tolerance = rospy.get_param(
             '~single_wall_match_tolerance', 0.30)
         self.single_wall_selection_margin = rospy.get_param(
@@ -58,6 +60,12 @@ class CorridorCentering(object):
             '~distance_filter_alpha', 0.35)
         self.scan_timeout = rospy.get_param(
             '~scan_timeout', 0.50)
+        self.minimum_edge_clearance = rospy.get_param(
+            '~minimum_edge_clearance', 0.15)
+        self.near_wall_linear_speed = rospy.get_param(
+            '~near_wall_linear_speed', 0.04)
+        self.near_wall_angular_speed = rospy.get_param(
+            '~near_wall_angular_speed', 0.08)
 
         self.robot_front_from_lidar = rospy.get_param(
             '~robot_front_from_lidar', 0.11)
@@ -71,6 +79,8 @@ class CorridorCentering(object):
         self.lock = threading.Lock()
         self.left_distance = None
         self.right_distance = None
+        self.safety_left_distance = None
+        self.safety_right_distance = None
         self.current_corridor_width = None
         self.nominal_corridor_width = self.expected_corridor_width
         self.normal_confirmation_count = 0
@@ -103,6 +113,13 @@ class CorridorCentering(object):
         return (ordered[middle - 1] + ordered[middle]) * 0.5
 
     @staticmethod
+    def central_spread(values):
+        ordered = sorted(values)
+        low_index = int(round((len(ordered) - 1) * 0.10))
+        high_index = int(round((len(ordered) - 1) * 0.90))
+        return ordered[high_index] - ordered[low_index]
+
+    @staticmethod
     def clamp(value, minimum, maximum):
         return min(maximum, max(minimum, value))
 
@@ -125,6 +142,8 @@ class CorridorCentering(object):
     def scan_callback(self, msg):
         left_samples = []
         right_samples = []
+        left_safety_samples = []
+        right_safety_samples = []
         angle = msg.angle_min
 
         for measured_range in msg.ranges:
@@ -138,6 +157,12 @@ class CorridorCentering(object):
                         self.side_max_angle):
                     lateral_distance = (
                         measured_range * abs(math.sin(angle)))
+                    if (0.05 <= lateral_distance <=
+                            self.side_max_distance):
+                        if angle > 0.0:
+                            left_safety_samples.append(lateral_distance)
+                        else:
+                            right_safety_samples.append(lateral_distance)
                     if (self.side_min_distance <= lateral_distance <=
                             self.side_max_distance):
                         if angle > 0.0:
@@ -152,35 +177,60 @@ class CorridorCentering(object):
             left = self.median(left_samples)
         if len(right_samples) >= self.minimum_samples:
             right = self.median(right_samples)
+        left_safety = None
+        right_safety = None
+        if len(left_safety_samples) >= self.minimum_samples:
+            left_safety = self.median(left_safety_samples)
+        if len(right_safety_samples) >= self.minimum_samples:
+            right_safety = self.median(right_safety_samples)
+
+        left_flat = (
+            left is not None and
+            self.central_spread(left_samples) <=
+            self.wall_flatness_tolerance)
+        right_flat = (
+            right is not None and
+            self.central_spread(right_samples) <=
+            self.wall_flatness_tolerance)
 
         with self.lock:
             nominal_width = self.nominal_corridor_width
-            target_side_distance = nominal_width * 0.5
             current_width = None
             if left is not None and right is not None:
                 current_width = left + right
 
+            self.safety_left_distance = left_safety
+            self.safety_right_distance = right_safety
             self.current_corridor_width = current_width
             self.wall_mode = 'none'
             self.last_scan_wall_time = time.time()
 
-            normal_geometry = (
+            corridor_width_in_range = (
                 current_width is not None and
                 self.corridor_min_width <= current_width <=
-                self.corridor_max_width and
+                self.corridor_max_width)
+            normal_geometry = (
+                corridor_width_in_range and
+                left_flat and
+                right_flat and
                 abs(current_width - nominal_width) <=
                 self.corridor_width_tolerance)
 
             if not self.normal_corridor_seen:
-                initial_normal_geometry = (
-                    normal_geometry and
-                    abs(left - target_side_distance) <=
-                    self.initial_side_tolerance and
-                    abs(right - target_side_distance) <=
-                    self.initial_side_tolerance)
-                if initial_normal_geometry:
-                    self.normal_confirmation_count += 1
+                acquisition_geometry = (
+                    corridor_width_in_range and
+                    left_flat and
+                    right_flat)
+                if acquisition_geometry:
                     self.normal_width_samples.append(current_width)
+                    if (max(self.normal_width_samples) -
+                            min(self.normal_width_samples) <=
+                            self.acquisition_width_spread):
+                        self.normal_confirmation_count = len(
+                            self.normal_width_samples)
+                    else:
+                        self.normal_width_samples = [current_width]
+                        self.normal_confirmation_count = 1
                 else:
                     self.normal_confirmation_count = 0
                     self.normal_width_samples = []
@@ -268,19 +318,62 @@ class CorridorCentering(object):
         with self.lock:
             left = self.left_distance
             right = self.right_distance
+            safety_left = self.safety_left_distance
+            safety_right = self.safety_right_distance
             current_width = self.current_corridor_width
             nominal_width = self.nominal_corridor_width
             wall_mode = self.wall_mode
             normal_corridor_seen = self.normal_corridor_seen
+            confirmation_count = self.normal_confirmation_count
             scan_time = self.last_scan_wall_time
+
+        scan_is_fresh = (
+            scan_time is not None and
+            now - scan_time <= self.scan_timeout)
+        minimum_lidar_wall_distance = (
+            self.robot_half_width + self.minimum_edge_clearance)
+        left_too_close = (
+            safety_left is not None and
+            safety_left < minimum_lidar_wall_distance)
+        right_too_close = (
+            safety_right is not None and
+            safety_right < minimum_lidar_wall_distance)
+
+        if (msg.linear.x >= self.minimum_forward_speed and
+                scan_is_fresh and
+                (left_too_close or right_too_close)):
+            if left_too_close and right_too_close:
+                command.linear.x = 0.0
+                command.angular.z = 0.0
+                action = 'stop'
+            elif left_too_close:
+                command.linear.x = min(
+                    command.linear.x, self.near_wall_linear_speed)
+                command.angular.z = -self.near_wall_angular_speed
+                action = 'steer right'
+            else:
+                command.linear.x = min(
+                    command.linear.x, self.near_wall_linear_speed)
+                command.angular.z = self.near_wall_angular_speed
+                action = 'steer left'
+            rospy.logwarn_throttle(
+                1.0,
+                "corridor_centering wall guard: left %s right %s, %s",
+                ("%.3f" % safety_left
+                 if safety_left is not None else "open"),
+                ("%.3f" % safety_right
+                 if safety_right is not None else "open"),
+                action)
+            self.cmd_pub.publish(command)
+            return
 
         can_center = (
             msg.linear.x >= self.minimum_forward_speed and
-            abs(msg.angular.z) <= self.maximum_input_angular_speed and
+            abs(msg.angular.z) <=
+            self.maximum_input_angular_speed + 1e-6 and
             normal_corridor_seen and
             wall_mode != 'none' and
-            scan_time is not None and
-            now - scan_time <= self.scan_timeout)
+            scan_is_fresh)
 
         if can_center:
             if wall_mode == 'both':
@@ -325,13 +418,23 @@ class CorridorCentering(object):
                 center_error,
                 correction)
         elif (msg.linear.x >= self.minimum_forward_speed and
-              abs(msg.angular.z) <= self.maximum_input_angular_speed):
+              abs(msg.angular.z) <=
+              self.maximum_input_angular_speed + 1e-6):
             rospy.loginfo_throttle(
                 2.0,
-                "corridor_centering unavailable (%s); passing DWA command",
+                "corridor_centering unavailable (%s): left %s right %s "
+                "width %s confirmation %d/%d; passing DWA command",
                 ("normal corridor not acquired"
                  if not normal_corridor_seen else
-                 "no trustworthy corridor wall"))
+                 "no trustworthy corridor wall"),
+                ("%.3f" % safety_left
+                 if safety_left is not None else "open"),
+                ("%.3f" % safety_right
+                 if safety_right is not None else "open"),
+                ("%.3f" % current_width
+                 if current_width is not None else "unknown"),
+                confirmation_count,
+                self.normal_confirmation_samples)
 
         self.cmd_pub.publish(command)
 
