@@ -15,7 +15,7 @@ from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import String
+from std_msgs.msg import Empty, String
 
 # =========================================================
 # 1. [완벽 복구된 좌표 데이터베이스]
@@ -54,6 +54,7 @@ locations = {
 
 cmd_vel_pub = None
 cmd_vel_nav_pub = None
+corridor_reset_pub = None
 
 CENTER_XY_GOAL_TOLERANCE = 1.00
 FINAL_XY_GOAL_TOLERANCE = 0.15
@@ -253,7 +254,7 @@ def normalize_angle(angle):
 
 class DeliveryNavigator(object):
     def __init__(self):
-        global cmd_vel_pub, cmd_vel_nav_pub
+        global cmd_vel_pub, cmd_vel_nav_pub, corridor_reset_pub
         rospy.init_node('navi_cmd_node')
         self.odom_position = None
         self.odom_yaw = None
@@ -280,6 +281,8 @@ class DeliveryNavigator(object):
         cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         cmd_vel_nav_pub = rospy.Publisher(
             '/cmd_vel_nav', Twist, queue_size=10)
+        corridor_reset_pub = rospy.Publisher(
+            '/corridor_centering/reset', Empty, queue_size=1)
         self.status_pub = rospy.Publisher('/robot_status', String, queue_size=10)
         self.command_sub = rospy.Subscriber('/llm_command', String, self.command_callback)
         self.tts_event_sub = rospy.Subscriber(
@@ -338,6 +341,13 @@ class DeliveryNavigator(object):
     def stop_robot(self):
         twist = Twist()
         cmd_vel_pub.publish(twist)
+
+    def reset_corridor_direction_state(self):
+        reset_message = Empty()
+        for _attempt in range(3):
+            corridor_reset_pub.publish(reset_message)
+            rospy.sleep(0.05)
+        rospy.sleep(0.35)
 
     def interruptible_sleep(self, duration):
         deadline = time.time() + duration
@@ -1620,7 +1630,7 @@ class DeliveryNavigator(object):
                     console_text(location_name))
                 return False
             self.stop_robot()
-            rospy.sleep(0.3)
+            self.reset_corridor_direction_state()
 
             travel_distance = max(
                 0.0,

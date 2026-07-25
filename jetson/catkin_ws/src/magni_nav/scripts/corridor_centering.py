@@ -8,6 +8,7 @@ import time
 import rospy
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import Empty
 
 
 class CorridorCentering(object):
@@ -94,6 +95,9 @@ class CorridorCentering(object):
             '/scan', LaserScan, self.scan_callback, queue_size=1)
         self.cmd_sub = rospy.Subscriber(
             '/cmd_vel_nav', Twist, self.cmd_callback, queue_size=10)
+        self.reset_sub = rospy.Subscriber(
+            '/corridor_centering/reset', Empty, self.reset_callback,
+            queue_size=1)
 
         rospy.loginfo(
             "corridor_centering: side sectors %.0f..%.0f deg, "
@@ -103,6 +107,18 @@ class CorridorCentering(object):
             self.corridor_min_width,
             self.corridor_max_width,
             self.centering_gain)
+
+    def reset_callback(self, _msg):
+        with self.lock:
+            self.left_distance = None
+            self.right_distance = None
+            self.safety_left_distance = None
+            self.safety_right_distance = None
+            self.current_corridor_width = None
+            self.wall_mode = 'none'
+            self.last_scan_wall_time = None
+        rospy.loginfo(
+            "corridor_centering: cleared direction-dependent wall state")
 
     @staticmethod
     def median(values):
