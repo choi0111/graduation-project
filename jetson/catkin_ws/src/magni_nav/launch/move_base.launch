@@ -35,14 +35,21 @@
     <param name="normal_confirmation_samples" value="8" />
     <param name="single_wall_match_tolerance" value="0.30" />
     <param name="single_wall_selection_margin" value="0.03" />
-    <param name="width_learning_alpha" value="0.02" />
+    <param name="measured_door_recess_depth" value="0.175" />
+    <param name="door_recess_width_tolerance" value="0.10" />
+    <param name="width_learning_alpha" value="0.0" />
     <param name="minimum_samples" value="8" />
     <param name="minimum_forward_speed" value="0.04" />
     <param name="maximum_input_angular_speed" value="0.08" />
     <param name="maximum_output_angular_speed" value="0.10" />
     <param name="centering_gain" value="0.16" />
+    <param name="heading_gain" value="0.45" />
+    <param name="heading_deadband_deg" value="1.5" />
     <param name="centering_deadband" value="0.04" />
     <param name="maximum_correction" value="0.06" />
+    <param name="centering_slow_error" value="0.12" />
+    <param name="centering_slow_heading_deg" value="4.0" />
+    <param name="centering_slow_speed" value="0.06" />
     <param name="distance_filter_alpha" value="0.35" />
     <param name="scan_timeout" value="0.50" />
     <param name="minimum_edge_clearance" value="0.25" />

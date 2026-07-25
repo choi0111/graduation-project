@@ -41,6 +41,10 @@ class CorridorCentering(object):
             '~single_wall_match_tolerance', 0.30)
         self.single_wall_selection_margin = rospy.get_param(
             '~single_wall_selection_margin', 0.03)
+        self.measured_door_recess_depth = rospy.get_param(
+            '~measured_door_recess_depth', 0.175)
+        self.door_recess_width_tolerance = rospy.get_param(
+            '~door_recess_width_tolerance', 0.12)
         self.width_learning_alpha = rospy.get_param(
             '~width_learning_alpha', 0.02)
         self.minimum_samples = int(rospy.get_param(
@@ -53,10 +57,20 @@ class CorridorCentering(object):
             '~maximum_output_angular_speed', 0.10)
         self.centering_gain = rospy.get_param(
             '~centering_gain', 0.16)
+        self.heading_gain = rospy.get_param(
+            '~heading_gain', 0.45)
+        self.heading_deadband = math.radians(rospy.get_param(
+            '~heading_deadband_deg', 1.5))
         self.centering_deadband = rospy.get_param(
             '~centering_deadband', 0.04)
         self.maximum_correction = rospy.get_param(
             '~maximum_correction', 0.06)
+        self.centering_slow_error = rospy.get_param(
+            '~centering_slow_error', 0.12)
+        self.centering_slow_heading = math.radians(rospy.get_param(
+            '~centering_slow_heading_deg', 4.0))
+        self.centering_slow_speed = rospy.get_param(
+            '~centering_slow_speed', 0.06)
         self.distance_filter_alpha = rospy.get_param(
             '~distance_filter_alpha', 0.35)
         self.scan_timeout = rospy.get_param(
@@ -82,6 +96,8 @@ class CorridorCentering(object):
         self.right_distance = None
         self.safety_left_distance = None
         self.safety_right_distance = None
+        self.left_wall_heading = None
+        self.right_wall_heading = None
         self.current_corridor_width = None
         self.nominal_corridor_width = self.expected_corridor_width
         self.normal_confirmation_count = 0
@@ -114,6 +130,8 @@ class CorridorCentering(object):
             self.right_distance = None
             self.safety_left_distance = None
             self.safety_right_distance = None
+            self.left_wall_heading = None
+            self.right_wall_heading = None
             self.current_corridor_width = None
             self.wall_mode = 'none'
             self.last_scan_wall_time = None
@@ -134,6 +152,21 @@ class CorridorCentering(object):
         low_index = int(round((len(ordered) - 1) * 0.10))
         high_index = int(round((len(ordered) - 1) * 0.90))
         return ordered[high_index] - ordered[low_index]
+
+    @staticmethod
+    def fit_wall_heading(points):
+        if len(points) < 2:
+            return None
+        mean_x = sum(point[0] for point in points) / float(len(points))
+        mean_y = sum(point[1] for point in points) / float(len(points))
+        denominator = sum(
+            (point[0] - mean_x) ** 2 for point in points)
+        if denominator <= 1e-6:
+            return None
+        slope = sum(
+            (point[0] - mean_x) * (point[1] - mean_y)
+            for point in points) / denominator
+        return math.atan(slope)
 
     @staticmethod
     def clamp(value, minimum, maximum):
@@ -160,6 +193,8 @@ class CorridorCentering(object):
         right_samples = []
         left_safety_samples = []
         right_safety_samples = []
+        left_wall_points = []
+        right_wall_points = []
         angle = msg.angle_min
 
         for measured_range in msg.ranges:
@@ -181,10 +216,14 @@ class CorridorCentering(object):
                             right_safety_samples.append(lateral_distance)
                     if (self.side_min_distance <= lateral_distance <=
                             self.side_max_distance):
+                        point_x = measured_range * math.cos(angle)
+                        point_y = measured_range * math.sin(angle)
                         if angle > 0.0:
                             left_samples.append(lateral_distance)
+                            left_wall_points.append((point_x, point_y))
                         else:
                             right_samples.append(lateral_distance)
+                            right_wall_points.append((point_x, point_y))
             angle += msg.angle_increment
 
         left = None
@@ -199,6 +238,8 @@ class CorridorCentering(object):
             left_safety = self.median(left_safety_samples)
         if len(right_safety_samples) >= self.minimum_samples:
             right_safety = self.median(right_safety_samples)
+        left_heading = self.fit_wall_heading(left_wall_points)
+        right_heading = self.fit_wall_heading(right_wall_points)
 
         left_flat = (
             left is not None and
@@ -208,15 +249,27 @@ class CorridorCentering(object):
             right is not None and
             self.central_spread(right_samples) <=
             self.wall_flatness_tolerance)
+        if not left_flat:
+            left_heading = None
+        if not right_flat:
+            right_heading = None
 
         with self.lock:
             nominal_width = self.nominal_corridor_width
             current_width = None
             if left is not None and right is not None:
                 current_width = left + right
+            door_recess_geometry = (
+                current_width is not None and
+                abs(current_width -
+                    (nominal_width +
+                     self.measured_door_recess_depth)) <=
+                self.door_recess_width_tolerance)
 
             self.safety_left_distance = left_safety
             self.safety_right_distance = right_safety
+            self.left_wall_heading = left_heading
+            self.right_wall_heading = right_heading
             self.current_corridor_width = current_width
             self.wall_mode = 'none'
             self.last_scan_wall_time = time.time()
@@ -229,6 +282,7 @@ class CorridorCentering(object):
                 corridor_width_in_range and
                 left_flat and
                 right_flat and
+                not door_recess_geometry and
                 abs(current_width - nominal_width) <=
                 self.corridor_width_tolerance)
 
@@ -236,7 +290,8 @@ class CorridorCentering(object):
                 acquisition_geometry = (
                     corridor_width_in_range and
                     left_flat and
-                    right_flat)
+                    right_flat and
+                    not door_recess_geometry)
                 if acquisition_geometry:
                     self.normal_width_samples.append(current_width)
                     if (max(self.normal_width_samples) -
@@ -254,16 +309,22 @@ class CorridorCentering(object):
                 if (self.normal_confirmation_count >=
                         self.normal_confirmation_samples):
                     self.normal_corridor_seen = True
-                    self.nominal_corridor_width = self.median(
+                    measured_width = self.median(
                         self.normal_width_samples)
+                    if self.width_learning_alpha > 0.0:
+                        self.nominal_corridor_width = measured_width
+                    else:
+                        self.nominal_corridor_width = (
+                            self.expected_corridor_width)
                     self.left_distance = left
                     self.right_distance = right
                     self.wall_mode = 'both'
                     rospy.loginfo(
                         "corridor_centering acquired normal corridor: "
-                        "left %.3f right %.3f width %.3f",
+                        "left %.3f right %.3f measured %.3f target %.3f",
                         left,
                         right,
+                        measured_width,
                         self.nominal_corridor_width)
                 return
 
@@ -283,6 +344,7 @@ class CorridorCentering(object):
 
             opening_geometry = (
                 (left is None) != (right is None) or
+                door_recess_geometry or
                 (current_width is not None and
                  current_width > nominal_width +
                  self.corridor_width_tolerance))
@@ -336,6 +398,8 @@ class CorridorCentering(object):
             right = self.right_distance
             safety_left = self.safety_left_distance
             safety_right = self.safety_right_distance
+            left_heading = self.left_wall_heading
+            right_heading = self.right_wall_heading
             current_width = self.current_corridor_width
             nominal_width = self.nominal_corridor_width
             wall_mode = self.wall_mode
@@ -394,25 +458,54 @@ class CorridorCentering(object):
         if can_center:
             if wall_mode == 'both':
                 center_error = left - right
+                heading_samples = [
+                    value for value in (left_heading, right_heading)
+                    if value is not None]
+                wall_heading = (
+                    sum(heading_samples) / float(len(heading_samples))
+                    if heading_samples else None)
             elif wall_mode == 'left':
                 center_error = 2.0 * left - nominal_width
+                wall_heading = left_heading
             else:
                 center_error = nominal_width - 2.0 * right
+                wall_heading = right_heading
 
             if abs(center_error) <= self.centering_deadband + 1e-6:
-                correction = 0.0
+                lateral_correction = 0.0
             else:
                 effective_error = math.copysign(
                     abs(center_error) - self.centering_deadband,
                     center_error)
-                correction = self.clamp(
+                lateral_correction = self.clamp(
                     self.centering_gain * effective_error,
                     -self.maximum_correction,
                     self.maximum_correction)
+
+            if (wall_heading is None or
+                    abs(wall_heading) <= self.heading_deadband + 1e-6):
+                heading_correction = 0.0
+                effective_heading = 0.0
+            else:
+                effective_heading = math.copysign(
+                    abs(wall_heading) - self.heading_deadband,
+                    wall_heading)
+                heading_correction = (
+                    self.heading_gain * effective_heading)
+
+            correction = self.clamp(
+                lateral_correction + heading_correction,
+                -self.maximum_output_angular_speed,
+                self.maximum_output_angular_speed)
             command.angular.z = self.clamp(
                 correction,
                 -self.maximum_output_angular_speed,
                 self.maximum_output_angular_speed)
+            if (abs(center_error) >= self.centering_slow_error or
+                    (wall_heading is not None and
+                     abs(wall_heading) >= self.centering_slow_heading)):
+                command.linear.x = min(
+                    command.linear.x, self.centering_slow_speed)
             if wall_mode == 'both':
                 left_text = "%.3f" % left
                 right_text = "%.3f" % right
@@ -425,14 +518,21 @@ class CorridorCentering(object):
             rospy.loginfo_throttle(
                 2.0,
                 "corridor_centering active (%s): left %s right %s "
-                "width %s error %.3f correction %.3f",
+                "width %s target %.3f error %.3f heading %s "
+                "lateral %.3f angular %.3f output %.3f speed %.3f",
                 wall_mode,
                 left_text,
                 right_text,
                 ("%.3f" % current_width
                  if current_width is not None else "open"),
+                nominal_width * 0.5,
                 center_error,
-                correction)
+                ("%.1fdeg" % math.degrees(wall_heading)
+                 if wall_heading is not None else "unknown"),
+                lateral_correction,
+                heading_correction,
+                correction,
+                command.linear.x)
         elif (msg.linear.x >= self.minimum_forward_speed and
               abs(msg.angular.z) <=
               self.maximum_input_angular_speed + 1e-6):
