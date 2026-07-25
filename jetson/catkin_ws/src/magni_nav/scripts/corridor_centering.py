@@ -52,11 +52,15 @@ class CorridorCentering(object):
         self.maximum_output_angular_speed = rospy.get_param(
             '~maximum_output_angular_speed', 0.10)
         self.centering_gain = rospy.get_param(
-            '~centering_gain', 0.16)
+            '~centering_gain', 0.22)
         self.centering_deadband = rospy.get_param(
             '~centering_deadband', 0.04)
         self.maximum_correction = rospy.get_param(
-            '~maximum_correction', 0.06)
+            '~maximum_correction', 0.10)
+        self.large_center_error = rospy.get_param(
+            '~large_center_error', 0.20)
+        self.large_error_linear_speed = rospy.get_param(
+            '~large_error_linear_speed', 0.05)
         self.centering_priority_error = max(
             0.01,
             rospy.get_param('~centering_priority_error', 0.30))
@@ -289,8 +293,9 @@ class CorridorCentering(object):
             opening_geometry = (
                 (left is None) != (right is None) or
                 (current_width is not None and
-                 current_width > nominal_width +
-                 self.corridor_width_tolerance))
+                 (current_width > self.corridor_max_width or
+                  current_width > nominal_width +
+                  self.corridor_width_tolerance)))
             if not opening_geometry:
                 return
 
@@ -425,6 +430,10 @@ class CorridorCentering(object):
                 correction + path_tracking_weight * msg.angular.z,
                 -self.maximum_output_angular_speed,
                 self.maximum_output_angular_speed)
+            if abs(center_error) >= self.large_center_error:
+                command.linear.x = min(
+                    command.linear.x,
+                    self.large_error_linear_speed)
             if wall_mode == 'both':
                 left_text = "%.3f" % left
                 right_text = "%.3f" % right
@@ -437,7 +446,8 @@ class CorridorCentering(object):
             rospy.loginfo_throttle(
                 2.0,
                 "corridor_centering active (%s): left %s right %s "
-                "width %s error %.3f correction %.3f path %.3f output %.3f",
+                "width %s error %.3f correction %.3f path %.3f "
+                "output %.3f speed %.3f",
                 wall_mode,
                 left_text,
                 right_text,
@@ -446,7 +456,8 @@ class CorridorCentering(object):
                 center_error,
                 correction,
                 path_tracking_weight * msg.angular.z,
-                command.angular.z)
+                command.angular.z,
+                command.linear.x)
         elif (msg.linear.x >= self.minimum_forward_speed and
               abs(msg.angular.z) <=
               self.maximum_input_angular_speed + 1e-6):
