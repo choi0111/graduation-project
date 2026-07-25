@@ -43,6 +43,8 @@
     <param name="centering_gain" value="0.16" />
     <param name="centering_deadband" value="0.04" />
     <param name="maximum_correction" value="0.06" />
+    <param name="centering_priority_error" value="0.30" />
+    <param name="minimum_path_tracking_weight" value="0.25" />
     <param name="distance_filter_alpha" value="0.35" />
     <param name="scan_timeout" value="0.50" />
     <param name="minimum_edge_clearance" value="0.25" />

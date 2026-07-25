@@ -57,6 +57,13 @@ class CorridorCentering(object):
             '~centering_deadband', 0.04)
         self.maximum_correction = rospy.get_param(
             '~maximum_correction', 0.06)
+        self.centering_priority_error = max(
+            0.01,
+            rospy.get_param('~centering_priority_error', 0.30))
+        self.minimum_path_tracking_weight = self.clamp(
+            rospy.get_param('~minimum_path_tracking_weight', 0.25),
+            0.0,
+            1.0)
         self.distance_filter_alpha = rospy.get_param(
             '~distance_filter_alpha', 0.35)
         self.scan_timeout = rospy.get_param(
@@ -407,8 +414,15 @@ class CorridorCentering(object):
                     self.centering_gain * effective_error,
                     -self.maximum_correction,
                     self.maximum_correction)
+            centering_priority = self.clamp(
+                abs(center_error) / self.centering_priority_error,
+                0.0,
+                1.0)
+            path_tracking_weight = max(
+                self.minimum_path_tracking_weight,
+                1.0 - centering_priority)
             command.angular.z = self.clamp(
-                correction,
+                correction + path_tracking_weight * msg.angular.z,
                 -self.maximum_output_angular_speed,
                 self.maximum_output_angular_speed)
             if wall_mode == 'both':
@@ -423,14 +437,16 @@ class CorridorCentering(object):
             rospy.loginfo_throttle(
                 2.0,
                 "corridor_centering active (%s): left %s right %s "
-                "width %s error %.3f correction %.3f",
+                "width %s error %.3f correction %.3f path %.3f output %.3f",
                 wall_mode,
                 left_text,
                 right_text,
                 ("%.3f" % current_width
                  if current_width is not None else "open"),
                 center_error,
-                correction)
+                correction,
+                path_tracking_weight * msg.angular.z,
+                command.angular.z)
         elif (msg.linear.x >= self.minimum_forward_speed and
               abs(msg.angular.z) <=
               self.maximum_input_angular_speed + 1e-6):
