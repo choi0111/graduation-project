@@ -41,8 +41,6 @@ class CorridorCentering(object):
             '~single_wall_match_tolerance', 0.30)
         self.single_wall_selection_margin = rospy.get_param(
             '~single_wall_selection_margin', 0.03)
-        self.single_wall_reacquire_tolerance = rospy.get_param(
-            '~single_wall_reacquire_tolerance', 0.30)
         self.width_learning_alpha = rospy.get_param(
             '~width_learning_alpha', 0.02)
         self.minimum_samples = int(rospy.get_param(
@@ -55,29 +53,10 @@ class CorridorCentering(object):
             '~maximum_output_angular_speed', 0.10)
         self.centering_gain = rospy.get_param(
             '~centering_gain', 0.16)
-        self.centering_derivative_gain = rospy.get_param(
-            '~centering_derivative_gain', 0.30)
-        self.derivative_filter_alpha = self.clamp(
-            rospy.get_param('~derivative_filter_alpha', 0.45),
-            0.0,
-            1.0)
-        self.maximum_center_error_rate = rospy.get_param(
-            '~maximum_center_error_rate', 0.50)
         self.centering_deadband = rospy.get_param(
             '~centering_deadband', 0.04)
         self.maximum_correction = rospy.get_param(
-            '~maximum_correction', 0.08)
-        self.large_center_error = rospy.get_param(
-            '~large_center_error', 0.12)
-        self.large_error_linear_speed = rospy.get_param(
-            '~large_error_linear_speed', 0.05)
-        self.centering_priority_error = max(
-            0.01,
-            rospy.get_param('~centering_priority_error', 0.30))
-        self.minimum_path_tracking_weight = self.clamp(
-            rospy.get_param('~minimum_path_tracking_weight', 0.25),
-            0.0,
-            1.0)
+            '~maximum_correction', 0.06)
         self.distance_filter_alpha = rospy.get_param(
             '~distance_filter_alpha', 0.35)
         self.scan_timeout = rospy.get_param(
@@ -110,10 +89,6 @@ class CorridorCentering(object):
         self.normal_corridor_seen = False
         self.wall_mode = 'none'
         self.last_scan_wall_time = None
-        self.previous_center_error = None
-        self.previous_center_error_time = None
-        self.previous_center_wall_mode = 'none'
-        self.filtered_center_error_rate = 0.0
 
         self.cmd_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         self.scan_sub = rospy.Subscriber(
@@ -142,10 +117,6 @@ class CorridorCentering(object):
             self.current_corridor_width = None
             self.wall_mode = 'none'
             self.last_scan_wall_time = None
-            self.previous_center_error = None
-            self.previous_center_error_time = None
-            self.previous_center_wall_mode = 'none'
-            self.filtered_center_error_rate = 0.0
         rospy.loginfo(
             "corridor_centering: cleared direction-dependent wall state")
 
@@ -183,47 +154,6 @@ class CorridorCentering(object):
             return measured
         alpha = self.distance_filter_alpha
         return alpha * measured + (1.0 - alpha) * previous
-
-    def update_center_error_rate(self, center_error, wall_mode, now):
-        with self.lock:
-            previous_error = self.previous_center_error
-            previous_time = self.previous_center_error_time
-            previous_mode = self.previous_center_wall_mode
-            filtered_rate = self.filtered_center_error_rate
-
-            dt = None
-            if previous_time is not None:
-                dt = now - previous_time
-            reset_rate = (
-                previous_error is None or
-                dt is None or
-                dt <= 0.0 or
-                dt > 1.0 or
-                previous_mode != wall_mode)
-            if reset_rate:
-                filtered_rate = 0.0
-            else:
-                raw_rate = self.clamp(
-                    (center_error - previous_error) / dt,
-                    -self.maximum_center_error_rate,
-                    self.maximum_center_error_rate)
-                alpha = self.derivative_filter_alpha
-                filtered_rate = (
-                    alpha * raw_rate +
-                    (1.0 - alpha) * filtered_rate)
-
-            self.previous_center_error = center_error
-            self.previous_center_error_time = now
-            self.previous_center_wall_mode = wall_mode
-            self.filtered_center_error_rate = filtered_rate
-            return filtered_rate
-
-    def clear_centering_dynamics(self):
-        with self.lock:
-            self.previous_center_error = None
-            self.previous_center_error_time = None
-            self.previous_center_wall_mode = 'none'
-            self.filtered_center_error_rate = 0.0
 
     def scan_callback(self, msg):
         left_samples = []
@@ -297,6 +227,8 @@ class CorridorCentering(object):
                 self.corridor_max_width)
             normal_geometry = (
                 corridor_width_in_range and
+                left_flat and
+                right_flat and
                 abs(current_width - nominal_width) <=
                 self.corridor_width_tolerance)
 
@@ -352,46 +284,10 @@ class CorridorCentering(object):
             opening_geometry = (
                 (left is None) != (right is None) or
                 (current_width is not None and
-                 (current_width > self.corridor_max_width or
-                  current_width > nominal_width +
-                  self.corridor_width_tolerance)))
+                 current_width > nominal_width +
+                 self.corridor_width_tolerance))
             if not opening_geometry:
                 return
-
-            if self.left_distance is None and self.right_distance is None:
-                expected_side_distance = nominal_width * 0.5
-                reacquire_candidates = []
-                if left is not None and left_flat:
-                    reacquire_candidates.append(
-                        ('left', abs(left - expected_side_distance)))
-                if right is not None and right_flat:
-                    reacquire_candidates.append(
-                        ('right', abs(right - expected_side_distance)))
-                reacquire_candidates.sort(key=lambda item: item[1])
-                can_reacquire = (
-                    reacquire_candidates and
-                    reacquire_candidates[0][1] <=
-                    self.single_wall_reacquire_tolerance)
-                if (can_reacquire and
-                        len(reacquire_candidates) > 1 and
-                        reacquire_candidates[1][1] -
-                        reacquire_candidates[0][1] <
-                        self.single_wall_selection_margin):
-                    can_reacquire = False
-                if can_reacquire:
-                    intact_side = reacquire_candidates[0][0]
-                    if intact_side == 'left':
-                        self.left_distance = left
-                    else:
-                        self.right_distance = right
-                    self.wall_mode = intact_side
-                    rospy.loginfo(
-                        "corridor_centering reacquired %s wall after "
-                        "direction reset: distance %.3f target %.3f",
-                        intact_side,
-                        (left if intact_side == 'left' else right),
-                        expected_side_distance)
-                    return
 
             wall_candidates = []
             if left is not None and self.left_distance is not None:
@@ -462,7 +358,6 @@ class CorridorCentering(object):
         if (msg.linear.x >= self.minimum_forward_speed and
                 scan_is_fresh and
                 (left_too_close or right_too_close)):
-            self.clear_centering_dynamics()
             if left_too_close and right_too_close:
                 command.linear.x = 0.0
                 command.angular.z = 0.0
@@ -505,36 +400,19 @@ class CorridorCentering(object):
                 center_error = nominal_width - 2.0 * right
 
             if abs(center_error) <= self.centering_deadband + 1e-6:
-                effective_error = 0.0
+                correction = 0.0
             else:
                 effective_error = math.copysign(
                     abs(center_error) - self.centering_deadband,
                     center_error)
-            center_error_rate = self.update_center_error_rate(
-                center_error, wall_mode, now)
-            proportional_correction = (
-                self.centering_gain * effective_error)
-            derivative_correction = (
-                self.centering_derivative_gain * center_error_rate)
-            correction = self.clamp(
-                proportional_correction + derivative_correction,
-                -self.maximum_correction,
-                self.maximum_correction)
-            centering_priority = self.clamp(
-                abs(center_error) / self.centering_priority_error,
-                0.0,
-                1.0)
-            path_tracking_weight = max(
-                self.minimum_path_tracking_weight,
-                1.0 - centering_priority)
+                correction = self.clamp(
+                    self.centering_gain * effective_error,
+                    -self.maximum_correction,
+                    self.maximum_correction)
             command.angular.z = self.clamp(
-                correction + path_tracking_weight * msg.angular.z,
+                correction,
                 -self.maximum_output_angular_speed,
                 self.maximum_output_angular_speed)
-            if abs(center_error) >= self.large_center_error:
-                command.linear.x = min(
-                    command.linear.x,
-                    self.large_error_linear_speed)
             if wall_mode == 'both':
                 left_text = "%.3f" % left
                 right_text = "%.3f" % right
@@ -547,41 +425,32 @@ class CorridorCentering(object):
             rospy.loginfo_throttle(
                 2.0,
                 "corridor_centering active (%s): left %s right %s "
-                "width %s error %.3f rate %.3f p %.3f d %.3f "
-                "correction %.3f path %.3f output %.3f speed %.3f",
+                "width %s error %.3f correction %.3f",
                 wall_mode,
                 left_text,
                 right_text,
                 ("%.3f" % current_width
                  if current_width is not None else "open"),
                 center_error,
-                center_error_rate,
-                proportional_correction,
-                derivative_correction,
-                correction,
-                path_tracking_weight * msg.angular.z,
-                command.angular.z,
-                command.linear.x)
-        else:
-            self.clear_centering_dynamics()
-            if (msg.linear.x >= self.minimum_forward_speed and
-                    abs(msg.angular.z) <=
-                    self.maximum_input_angular_speed + 1e-6):
-                rospy.loginfo_throttle(
-                    2.0,
-                    "corridor_centering unavailable (%s): left %s right %s "
-                    "width %s confirmation %d/%d; passing input command",
-                    ("normal corridor not acquired"
-                     if not normal_corridor_seen else
-                     "no trustworthy corridor wall"),
-                    ("%.3f" % safety_left
-                     if safety_left is not None else "open"),
-                    ("%.3f" % safety_right
-                     if safety_right is not None else "open"),
-                    ("%.3f" % current_width
-                     if current_width is not None else "unknown"),
-                    confirmation_count,
-                    self.normal_confirmation_samples)
+                correction)
+        elif (msg.linear.x >= self.minimum_forward_speed and
+              abs(msg.angular.z) <=
+              self.maximum_input_angular_speed + 1e-6):
+            rospy.loginfo_throttle(
+                2.0,
+                "corridor_centering unavailable (%s): left %s right %s "
+                "width %s confirmation %d/%d; passing DWA command",
+                ("normal corridor not acquired"
+                 if not normal_corridor_seen else
+                 "no trustworthy corridor wall"),
+                ("%.3f" % safety_left
+                 if safety_left is not None else "open"),
+                ("%.3f" % safety_right
+                 if safety_right is not None else "open"),
+                ("%.3f" % current_width
+                 if current_width is not None else "unknown"),
+                confirmation_count,
+                self.normal_confirmation_samples)
 
         self.cmd_pub.publish(command)
 
