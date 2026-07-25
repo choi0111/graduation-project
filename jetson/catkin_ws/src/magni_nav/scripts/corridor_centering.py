@@ -60,16 +60,6 @@ class CorridorCentering(object):
             '~distance_filter_alpha', 0.35)
         self.scan_timeout = rospy.get_param(
             '~scan_timeout', 0.50)
-        self.obstacle_path_margin = rospy.get_param(
-            '~obstacle_path_margin', 0.10)
-        self.minimum_front_clearance = rospy.get_param(
-            '~minimum_front_clearance', 0.60)
-        self.obstacle_release_margin = rospy.get_param(
-            '~obstacle_release_margin', 0.15)
-        self.obstacle_clear_samples = int(rospy.get_param(
-            '~obstacle_clear_samples', 5))
-        self.obstacle_minimum_samples = int(rospy.get_param(
-            '~obstacle_minimum_samples', 5))
         self.minimum_edge_clearance = rospy.get_param(
             '~minimum_edge_clearance', 0.15)
         self.near_wall_linear_speed = rospy.get_param(
@@ -85,17 +75,12 @@ class CorridorCentering(object):
             '~robot_half_width', 0.385)
         self.self_filter_margin = rospy.get_param(
             '~self_filter_margin', 0.03)
-        self.front_obstacle_stop_distance = (
-            self.robot_front_from_lidar + self.minimum_front_clearance)
 
         self.lock = threading.Lock()
         self.left_distance = None
         self.right_distance = None
         self.safety_left_distance = None
         self.safety_right_distance = None
-        self.front_obstacle_distance = None
-        self.front_obstacle_blocked = False
-        self.front_obstacle_clear_count = 0
         self.current_corridor_width = None
         self.nominal_corridor_width = self.expected_corridor_width
         self.normal_confirmation_count = 0
@@ -134,12 +119,6 @@ class CorridorCentering(object):
         high_index = int(round((len(ordered) - 1) * 0.90))
         return ordered[high_index] - ordered[low_index]
 
-    def robust_nearest(self, values):
-        if len(values) < self.obstacle_minimum_samples:
-            return None
-        ordered = sorted(values)
-        return ordered[self.obstacle_minimum_samples - 1]
-
     @staticmethod
     def clamp(value, minimum, maximum):
         return min(maximum, max(minimum, value))
@@ -165,7 +144,6 @@ class CorridorCentering(object):
         right_samples = []
         left_safety_samples = []
         right_safety_samples = []
-        front_obstacle_samples = []
         angle = msg.angle_min
 
         for measured_range in msg.ranges:
@@ -174,13 +152,6 @@ class CorridorCentering(object):
                     measured_range >= msg.range_min and
                     measured_range <= msg.range_max and
                     not self.is_robot_self_return(measured_range, angle)):
-                point_x = measured_range * math.cos(angle)
-                point_y = measured_range * math.sin(angle)
-                if (point_x > self.robot_front_from_lidar and
-                        abs(point_y) <=
-                        self.robot_half_width +
-                        self.obstacle_path_margin):
-                    front_obstacle_samples.append(point_x)
                 absolute_angle = abs(angle)
                 if (self.side_min_angle <= absolute_angle <=
                         self.side_max_angle):
@@ -212,7 +183,6 @@ class CorridorCentering(object):
             left_safety = self.median(left_safety_samples)
         if len(right_safety_samples) >= self.minimum_samples:
             right_safety = self.median(right_safety_samples)
-        front_obstacle = self.robust_nearest(front_obstacle_samples)
 
         left_flat = (
             left is not None and
@@ -222,42 +192,6 @@ class CorridorCentering(object):
             right is not None and
             self.central_spread(right_samples) <=
             self.wall_flatness_tolerance)
-
-        with self.lock:
-            obstacle_was_blocked = self.front_obstacle_blocked
-            self.front_obstacle_distance = front_obstacle
-            if (front_obstacle is not None and
-                    front_obstacle <=
-                    self.front_obstacle_stop_distance):
-                self.front_obstacle_blocked = True
-                self.front_obstacle_clear_count = 0
-            elif self.front_obstacle_blocked:
-                release_distance = (
-                    self.front_obstacle_stop_distance +
-                    self.obstacle_release_margin)
-                if (front_obstacle is None or
-                        front_obstacle >= release_distance):
-                    self.front_obstacle_clear_count += 1
-                    if (self.front_obstacle_clear_count >=
-                            self.obstacle_clear_samples):
-                        self.front_obstacle_blocked = False
-                        self.front_obstacle_clear_count = 0
-                else:
-                    self.front_obstacle_clear_count = 0
-
-            obstacle_is_blocked = self.front_obstacle_blocked
-
-        if obstacle_is_blocked and not obstacle_was_blocked:
-            self.cmd_pub.publish(Twist())
-            rospy.logwarn(
-                "corridor obstacle detected %.3f m ahead; "
-                "holding the active navigation goal",
-                front_obstacle
-                if front_obstacle is not None else -1.0)
-        elif obstacle_was_blocked and not obstacle_is_blocked:
-            rospy.loginfo(
-                "corridor obstacle cleared; resuming the active "
-                "navigation goal")
 
         with self.lock:
             nominal_width = self.nominal_corridor_width
@@ -386,8 +320,6 @@ class CorridorCentering(object):
             right = self.right_distance
             safety_left = self.safety_left_distance
             safety_right = self.safety_right_distance
-            front_obstacle = self.front_obstacle_distance
-            front_obstacle_blocked = self.front_obstacle_blocked
             current_width = self.current_corridor_width
             nominal_width = self.nominal_corridor_width
             wall_mode = self.wall_mode
@@ -398,28 +330,6 @@ class CorridorCentering(object):
         scan_is_fresh = (
             scan_time is not None and
             now - scan_time <= self.scan_timeout)
-        if msg.linear.x > 0.001 and not scan_is_fresh:
-            command.linear.x = 0.0
-            command.angular.z = 0.0
-            rospy.logwarn_throttle(
-                1.0,
-                "corridor obstacle wait: /scan is stale; navigation goal "
-                "remains active")
-            self.cmd_pub.publish(command)
-            return
-
-        if msg.linear.x > 0.001 and front_obstacle_blocked:
-            command.linear.x = 0.0
-            command.angular.z = 0.0
-            rospy.logwarn_throttle(
-                1.0,
-                "corridor obstacle wait: front %s m; navigation goal "
-                "remains active",
-                ("%.3f" % front_obstacle
-                 if front_obstacle is not None else "unknown"))
-            self.cmd_pub.publish(command)
-            return
-
         minimum_lidar_wall_distance = (
             self.robot_half_width + self.minimum_edge_clearance)
         left_too_close = (
