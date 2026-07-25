@@ -41,6 +41,8 @@ class CorridorCentering(object):
             '~single_wall_match_tolerance', 0.30)
         self.single_wall_selection_margin = rospy.get_param(
             '~single_wall_selection_margin', 0.03)
+        self.single_wall_reacquire_tolerance = rospy.get_param(
+            '~single_wall_reacquire_tolerance', 0.30)
         self.width_learning_alpha = rospy.get_param(
             '~width_learning_alpha', 0.02)
         self.minimum_samples = int(rospy.get_param(
@@ -355,6 +357,41 @@ class CorridorCentering(object):
                   self.corridor_width_tolerance)))
             if not opening_geometry:
                 return
+
+            if self.left_distance is None and self.right_distance is None:
+                expected_side_distance = nominal_width * 0.5
+                reacquire_candidates = []
+                if left is not None and left_flat:
+                    reacquire_candidates.append(
+                        ('left', abs(left - expected_side_distance)))
+                if right is not None and right_flat:
+                    reacquire_candidates.append(
+                        ('right', abs(right - expected_side_distance)))
+                reacquire_candidates.sort(key=lambda item: item[1])
+                can_reacquire = (
+                    reacquire_candidates and
+                    reacquire_candidates[0][1] <=
+                    self.single_wall_reacquire_tolerance)
+                if (can_reacquire and
+                        len(reacquire_candidates) > 1 and
+                        reacquire_candidates[1][1] -
+                        reacquire_candidates[0][1] <
+                        self.single_wall_selection_margin):
+                    can_reacquire = False
+                if can_reacquire:
+                    intact_side = reacquire_candidates[0][0]
+                    if intact_side == 'left':
+                        self.left_distance = left
+                    else:
+                        self.right_distance = right
+                    self.wall_mode = intact_side
+                    rospy.loginfo(
+                        "corridor_centering reacquired %s wall after "
+                        "direction reset: distance %.3f target %.3f",
+                        intact_side,
+                        (left if intact_side == 'left' else right),
+                        expected_side_distance)
+                    return
 
             wall_candidates = []
             if left is not None and self.left_distance is not None:

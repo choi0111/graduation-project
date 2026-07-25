@@ -35,6 +35,7 @@
     <param name="normal_confirmation_samples" value="8" />
     <param name="single_wall_match_tolerance" value="0.30" />
     <param name="single_wall_selection_margin" value="0.03" />
+    <param name="single_wall_reacquire_tolerance" value="0.30" />
     <param name="width_learning_alpha" value="0.02" />
     <param name="minimum_samples" value="8" />
     <param name="minimum_forward_speed" value="0.04" />
