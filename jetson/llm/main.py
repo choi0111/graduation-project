@@ -145,10 +145,6 @@ class VoiceControlNode:
     def play_robot_speech(self, text, completion_event=None):
         self.is_listening_paused = True
         self.last_speech_time = time.time()
-        if self.stt_engine:
-            # Robot speech starts a new interaction boundary. Do not let a stale
-            # or false wake-word session survive TTS and accept later noise.
-            self.stt_engine.is_awake = False
         rospy.loginfo(f"🔊 [로봇]: {text}")
         
         # --- 17개 다운로드 파일 자동 매칭 스위치 ---
@@ -203,17 +199,6 @@ class VoiceControlNode:
             return
 
         if scenario in ["SCENARIO_1", "SCENARIO_2", "SCENARIO_3", "SCENARIO_4"]:
-            normalized_text = "".join(str(text).lower().split())
-            navigation_terms = (
-                "배송", "배달", "이동", "출발", "보내",
-                "가줘", "가자", "으로가", "로가",
-            )
-            if not any(term in normalized_text for term in navigation_terms):
-                rospy.logwarn(
-                    "Rejected destination without an explicit navigation "
-                    "verb: %s", text)
-                return
-
             clean_payload = [str(p).lower().replace("호", "").strip() for p in payload if p]
             
             if not all(r in llm_module2.VALID_ROOMS for r in clean_payload):
