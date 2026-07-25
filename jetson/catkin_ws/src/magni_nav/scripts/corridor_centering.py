@@ -49,6 +49,8 @@ class CorridorCentering(object):
             '~door_reacquire_score_limit', 0.30)
         self.door_reacquire_score_margin = rospy.get_param(
             '~door_reacquire_score_margin', 0.05)
+        self.door_balanced_distance_tolerance = rospy.get_param(
+            '~door_balanced_distance_tolerance', 0.12)
         self.width_learning_alpha = rospy.get_param(
             '~width_learning_alpha', 0.02)
         self.minimum_samples = int(rospy.get_param(
@@ -284,8 +286,6 @@ class CorridorCentering(object):
                 self.corridor_max_width)
             normal_geometry = (
                 corridor_width_in_range and
-                left_flat and
-                right_flat and
                 not door_recess_geometry and
                 abs(current_width - nominal_width) <=
                 self.corridor_width_tolerance)
@@ -359,8 +359,7 @@ class CorridorCentering(object):
                     self.right_distance is None):
                 target_side_distance = nominal_width * 0.5
                 if (door_recess_geometry and
-                        left is not None and right is not None and
-                        left_flat and right_flat):
+                        left is not None and right is not None):
                     left_recess_score = (
                         abs(left -
                             (target_side_distance +
@@ -394,6 +393,17 @@ class CorridorCentering(object):
                             right,
                             target_side_distance,
                             hypotheses[0][1])
+                        return
+                    if (abs(left - right) <=
+                            self.door_balanced_distance_tolerance):
+                        self.left_distance = left
+                        self.right_distance = right
+                        self.wall_mode = 'both'
+                        rospy.loginfo(
+                            "corridor_centering using balanced door opening "
+                            "during wall reacquisition: left %.3f right %.3f",
+                            left,
+                            right)
                         return
 
                 single_side_candidates = []

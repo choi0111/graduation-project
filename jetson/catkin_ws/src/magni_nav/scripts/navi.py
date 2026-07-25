@@ -142,15 +142,6 @@ LIDAR_APPROACH_TIMEOUT = 35.0
 NEXT_GOAL_BACKUP_DISTANCE = 0.50
 NEXT_GOAL_BACKUP_SPEED = 0.05
 NEXT_GOAL_BACKUP_TIMEOUT = 18.0
-# After turning away from a recessed room, enter the normal-width corridor
-# before handing control back to DWA. Otherwise DWA can choose a diagonal
-# path while corridor centering is still waiting to reacquire both walls.
-HOME_CORRIDOR_ENTRY_DISTANCE = MEASURED_DOOR_WIDTH * 0.5 + 0.25
-HOME_CORRIDOR_ENTRY_SPEED = 0.06
-HOME_CORRIDOR_ENTRY_TIMEOUT = 28.0
-HOME_CORRIDOR_ENTRY_HEADING_KP = 0.60
-HOME_CORRIDOR_ENTRY_HEADING_DEADBAND = math.radians(1.0)
-HOME_CORRIDOR_ENTRY_MAX_ANGULAR_SPEED = 0.03
 ODOM_WAIT_TIMEOUT = 3.0
 ODOM_STALE_TIMEOUT = 1.0
 AMCL_WAIT_TIMEOUT = 3.0
@@ -1558,16 +1549,7 @@ class DeliveryNavigator(object):
             self.reset_corridor_direction_state()
         return success
 
-    def drive_straight_distance(
-            self,
-            description,
-            distance,
-            speed,
-            timeout,
-            hold_start_heading=False,
-            heading_kp=0.0,
-            heading_deadband=0.0,
-            max_heading_correction=0.0):
+    def drive_straight_distance(self, description, distance, speed, timeout):
         self.cancel_goal_if_active()
         self.stop_robot()
         rospy.sleep(0.2)
@@ -1578,7 +1560,6 @@ class DeliveryNavigator(object):
             return False
 
         start_x, start_y = self.odom_position
-        start_yaw = self.odom_yaw
         start_time = time.time()
         rate = rospy.Rate(20)
         command = Twist()
@@ -1618,18 +1599,6 @@ class DeliveryNavigator(object):
                     description, traveled, distance)
                 self.stop_robot()
                 return False
-
-            command.angular.z = 0.0
-            if hold_start_heading:
-                heading_error = normalize_angle(start_yaw - self.odom_yaw)
-                if abs(heading_error) > heading_deadband:
-                    effective_error = math.copysign(
-                        abs(heading_error) - heading_deadband,
-                        heading_error)
-                    correction = heading_kp * effective_error
-                    command.angular.z = max(
-                        -max_heading_correction,
-                        min(max_heading_correction, correction))
 
             cmd_vel_pub.publish(command)
             rate.sleep()
@@ -1950,26 +1919,10 @@ class DeliveryNavigator(object):
                 "Failed to align toward the initial position before return")
             return False
         self.stop_robot()
-
-        if not self.drive_straight_distance(
-                "entering the normal corridor for home return",
-                HOME_CORRIDOR_ENTRY_DISTANCE,
-                HOME_CORRIDOR_ENTRY_SPEED,
-                HOME_CORRIDOR_ENTRY_TIMEOUT,
-                hold_start_heading=True,
-                heading_kp=HOME_CORRIDOR_ENTRY_HEADING_KP,
-                heading_deadband=HOME_CORRIDOR_ENTRY_HEADING_DEADBAND,
-                max_heading_correction=
-                HOME_CORRIDOR_ENTRY_MAX_ANGULAR_SPEED):
-            rospy.logerr(
-                "Failed to enter the normal corridor before home return")
-            return False
-
-        self.stop_robot()
         self.reset_corridor_direction_state()
         rospy.loginfo(
-            "Normal corridor entered for home return; corridor centering "
-            "will reacquire walls in the return direction")
+            "Home-return heading aligned; corridor centering will reacquire "
+            "walls before passing the return command")
 
         if not self.set_xy_goal_tolerance(HOME_POSITION_VERIFY_TOLERANCE):
             return False

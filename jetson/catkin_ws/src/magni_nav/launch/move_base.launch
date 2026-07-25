@@ -39,6 +39,7 @@
     <param name="door_recess_width_tolerance" value="0.10" />
     <param name="door_reacquire_score_limit" value="0.30" />
     <param name="door_reacquire_score_margin" value="0.05" />
+    <param name="door_balanced_distance_tolerance" value="0.12" />
     <param name="width_learning_alpha" value="0.0" />
     <param name="minimum_samples" value="8" />
     <param name="minimum_forward_speed" value="0.04" />
