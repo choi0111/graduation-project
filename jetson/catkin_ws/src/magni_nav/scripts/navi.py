@@ -156,6 +156,9 @@ NEXT_GOAL_MIN_ANGULAR_SPEED = 0.03
 NEXT_GOAL_MAX_ANGULAR_SPEED = 0.08
 NEXT_GOAL_ALIGN_TIMEOUT = 50.0
 INITIAL_GOAL_BEHIND_ANGLE = math.pi * 0.5
+DIRECTION_CHANGE_ENTRY_DISTANCE = 0.40
+DIRECTION_CHANGE_ENTRY_SPEED = 0.04
+DIRECTION_CHANGE_ENTRY_TIMEOUT = 15.0
 ITEM_RECEIPT_TIMEOUT = 20.0
 ITEM_PROMPT_TTS_WAIT_TIMEOUT = 30.0
 HOME_LOCATION_NAME = u"initial_home"
@@ -1564,16 +1567,28 @@ class DeliveryNavigator(object):
             NEXT_GOAL_ALIGN_TIMEOUT)
         if success:
             self.reset_corridor_direction_state()
+            success = self.drive_straight_distance(
+                "entering the corridor after direction change",
+                DIRECTION_CHANGE_ENTRY_DISTANCE,
+                DIRECTION_CHANGE_ENTRY_SPEED,
+                DIRECTION_CHANGE_ENTRY_TIMEOUT,
+                use_corridor_centering=True)
         return success
 
-    def drive_straight_distance(self, description, distance, speed, timeout):
+    def drive_straight_distance(self, description, distance, speed, timeout,
+                                use_corridor_centering=False):
         self.cancel_goal_if_active()
-        self.stop_robot()
+        stop_motion = (
+            self.stop_corridor_drive
+            if use_corridor_centering else self.stop_robot)
+        command_publisher = (
+            cmd_vel_nav_pub if use_corridor_centering else cmd_vel_pub)
+        stop_motion()
         rospy.sleep(0.2)
 
         if not self.wait_for_fresh_odom(ODOM_WAIT_TIMEOUT):
             rospy.logerr("Fresh /odom data is required for %s", description)
-            self.stop_robot()
+            stop_motion()
             return False
 
         start_x, start_y = self.odom_position
@@ -1586,12 +1601,12 @@ class DeliveryNavigator(object):
 
         while not rospy.is_shutdown():
             if self.cancel_mission:
-                self.stop_robot()
+                stop_motion()
                 return False
 
             if self.paused:
                 pause_started = time.time()
-                self.stop_robot()
+                stop_motion()
                 self.wait_while_paused()
                 start_time += time.time() - pause_started
                 continue
@@ -1599,13 +1614,13 @@ class DeliveryNavigator(object):
             if (self.last_odom_wall_time is None or
                     time.time() - self.last_odom_wall_time > ODOM_STALE_TIMEOUT):
                 rospy.logerr("/odom stopped during %s", description)
-                self.stop_robot()
+                stop_motion()
                 return False
 
             current_x, current_y = self.odom_position
             traveled = math.hypot(current_x - start_x, current_y - start_y)
             if traveled >= distance:
-                self.stop_robot()
+                stop_motion()
                 print("[navi] {} complete at {:.3f} m".format(
                     description, traveled))
                 return True
@@ -1614,13 +1629,13 @@ class DeliveryNavigator(object):
                 rospy.logerr(
                     "%s timed out after %.3f m (target %.3f m)",
                     description, traveled, distance)
-                self.stop_robot()
+                stop_motion()
                 return False
 
-            cmd_vel_pub.publish(command)
+            command_publisher.publish(command)
             rate.sleep()
 
-        self.stop_robot()
+        stop_motion()
         return False
 
     def drive_corridor_to_home(self):
