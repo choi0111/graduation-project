@@ -227,8 +227,6 @@ class CorridorCentering(object):
                 self.corridor_max_width)
             normal_geometry = (
                 corridor_width_in_range and
-                left_flat and
-                right_flat and
                 abs(current_width - nominal_width) <=
                 self.corridor_width_tolerance)
 
@@ -439,7 +437,7 @@ class CorridorCentering(object):
             rospy.loginfo_throttle(
                 2.0,
                 "corridor_centering unavailable (%s): left %s right %s "
-                "width %s confirmation %d/%d; passing DWA command",
+                "width %s confirmation %d/%d; passing input command",
                 ("normal corridor not acquired"
                  if not normal_corridor_seen else
                  "no trustworthy corridor wall"),

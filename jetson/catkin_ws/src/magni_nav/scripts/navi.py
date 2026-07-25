@@ -162,8 +162,10 @@ HOME_LOCATION_NAME = u"initial_home"
 HOME_APPROACH_LOCATION_NAME = u"544호_중앙"
 HOME_APPROACH_XY_GOAL_TOLERANCE = 0.45
 HOME_DIRECT_APPROACH_SPEED = 0.06
-HOME_DIRECT_STOP_MARGIN = 0.10
-HOME_DIRECT_APPROACH_MAX_ATTEMPTS = 2
+HOME_DIRECT_APPROACH_MAX_ATTEMPTS = 4
+HOME_ROUTE_HEADING_SKIP_ALIGNMENT = math.radians(10.0)
+HOME_ROUTE_MAX_HEADING_ERROR = math.radians(15.0)
+HOME_ROUTE_TF_LOSS_TIMEOUT = 1.0
 HOME_POSITION_VERIFY_TOLERANCE = 0.25
 HOME_YAW_VERIFY_TOLERANCE = math.radians(4.0)
 HOME_ALIGNMENT_MAX_ATTEMPTS = 2
@@ -1537,13 +1539,16 @@ class DeliveryNavigator(object):
             self.stop_robot()
             return True
 
-        return self.rotate_to_map_yaw(
+        success = self.rotate_to_map_yaw(
             room_name,
             target_yaw,
             "turning in place toward first destination",
             NEXT_GOAL_MIN_ANGULAR_SPEED,
             NEXT_GOAL_MAX_ANGULAR_SPEED,
             NEXT_GOAL_ALIGN_TIMEOUT)
+        if success:
+            self.reset_corridor_direction_state()
+        return success
 
     def drive_straight_distance(self, description, distance, speed, timeout,
                                 use_corridor_centering=False):
@@ -1624,30 +1629,42 @@ class DeliveryNavigator(object):
                     console_text(location_name), position_error))
                 return True
 
-            if not self.align_toward_destination(location_name):
-                rospy.logerr(
-                    "Failed to align for centered return to %s",
-                    console_text(location_name))
-                return False
+            target_yaw = math.atan2(
+                target_pose[1] - self.amcl_position[1],
+                target_pose[0] - self.amcl_position[0])
+            heading_error = normalize_angle(target_yaw - self.amcl_yaw)
+            if abs(heading_error) > HOME_ROUTE_HEADING_SKIP_ALIGNMENT:
+                if not self.align_toward_destination(location_name):
+                    rospy.logerr(
+                        "Failed to align for centered return to %s",
+                        console_text(location_name))
+                    return False
+            else:
+                print(
+                    "[navi] {} is ahead ({:.1f} deg); keeping corridor "
+                    "heading".format(
+                        console_text(location_name),
+                        math.degrees(heading_error)))
             self.stop_robot()
             self.reset_corridor_direction_state()
 
-            travel_distance = max(
-                0.0,
-                position_error - HOME_DIRECT_STOP_MARGIN)
             timeout = max(
                 10.0,
-                travel_distance / HOME_DIRECT_APPROACH_SPEED + 10.0)
-            if not self.drive_straight_distance(
-                    "centered return to {}".format(
-                        console_text(location_name)),
-                    travel_distance,
-                    HOME_DIRECT_APPROACH_SPEED,
-                    timeout,
-                    use_corridor_centering=True):
+                position_error / HOME_DIRECT_APPROACH_SPEED + 10.0)
+            drive_state = self.drive_centered_toward_map_location(
+                location_name,
+                target_pose,
+                position_tolerance,
+                timeout)
+            if drive_state < 0:
                 return False
-            self.stop_robot()
-            rospy.sleep(0.5)
+            if drive_state > 0:
+                return True
+            rospy.logwarn(
+                "Centered return to %s needs heading correction; "
+                "realigning before continuing",
+                console_text(location_name))
+            rospy.sleep(0.3)
 
         if not self.refresh_localization_from_tf():
             rospy.logerr(
@@ -1669,6 +1686,87 @@ class DeliveryNavigator(object):
             position_error,
             position_tolerance)
         return False
+
+    def drive_centered_toward_map_location(
+            self, location_name, target_pose, position_tolerance, timeout):
+        self.cancel_goal_if_active()
+        self.stop_robot()
+        rospy.sleep(0.2)
+
+        start_time = time.time()
+        last_tf_time = start_time
+        rate = rospy.Rate(20)
+        command = Twist()
+        command.linear.x = HOME_DIRECT_APPROACH_SPEED
+
+        print("[navi] centered return to {}".format(
+            console_text(location_name)))
+
+        while not rospy.is_shutdown():
+            if self.cancel_mission:
+                self.stop_robot()
+                return -1
+            if self.paused:
+                pause_started = time.time()
+                self.stop_robot()
+                self.wait_while_paused()
+                start_time += time.time() - pause_started
+                last_tf_time = time.time()
+                continue
+
+            map_pose = self.lookup_map_pose()
+            if map_pose is None:
+                if time.time() - last_tf_time > HOME_ROUTE_TF_LOSS_TIMEOUT:
+                    rospy.logerr(
+                        "TF stopped during centered return to %s",
+                        console_text(location_name))
+                    self.stop_robot()
+                    return -1
+                self.stop_robot()
+                rate.sleep()
+                continue
+
+            last_tf_time = time.time()
+            current_position, current_yaw = map_pose
+            self.amcl_position = current_position
+            self.amcl_yaw = current_yaw
+            self.last_amcl_wall_time = last_tf_time
+
+            delta_x = target_pose[0] - current_position[0]
+            delta_y = target_pose[1] - current_position[1]
+            position_error = math.hypot(delta_x, delta_y)
+            if position_error <= position_tolerance:
+                self.stop_robot()
+                print(
+                    "[navi] arrived at {} (position {:.3f} m)".format(
+                        console_text(location_name), position_error))
+                return 1
+
+            target_yaw = math.atan2(delta_y, delta_x)
+            heading_error = normalize_angle(target_yaw - current_yaw)
+            if abs(heading_error) > HOME_ROUTE_MAX_HEADING_ERROR:
+                self.stop_robot()
+                rospy.logwarn(
+                    "Centered return heading drifted %.1f deg while %.3f m "
+                    "from %s",
+                    math.degrees(heading_error),
+                    position_error,
+                    console_text(location_name))
+                return 0
+
+            if time.time() - start_time > timeout:
+                rospy.logerr(
+                    "Centered return to %s timed out %.3f m from target",
+                    console_text(location_name),
+                    position_error)
+                self.stop_robot()
+                return -1
+
+            cmd_vel_nav_pub.publish(command)
+            rate.sleep()
+
+        self.stop_robot()
+        return -1
 
     def wait_for_fresh_front_scan(self, timeout):
         deadline = time.time() + timeout
@@ -1846,7 +1944,7 @@ class DeliveryNavigator(object):
         if not self.align_toward_destination(room_name):
             return False
         self.stop_robot()
-        rospy.sleep(0.5)
+        self.reset_corridor_direction_state()
         return True
 
     def move_to_room(self, room_name):
