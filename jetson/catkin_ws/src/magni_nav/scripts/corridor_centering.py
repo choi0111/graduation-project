@@ -45,6 +45,10 @@ class CorridorCentering(object):
             '~measured_door_recess_depth', 0.175)
         self.door_recess_width_tolerance = rospy.get_param(
             '~door_recess_width_tolerance', 0.12)
+        self.door_reacquire_score_limit = rospy.get_param(
+            '~door_reacquire_score_limit', 0.30)
+        self.door_reacquire_score_margin = rospy.get_param(
+            '~door_reacquire_score_margin', 0.05)
         self.width_learning_alpha = rospy.get_param(
             '~width_learning_alpha', 0.02)
         self.minimum_samples = int(rospy.get_param(
@@ -350,6 +354,77 @@ class CorridorCentering(object):
                  self.corridor_width_tolerance))
             if not opening_geometry:
                 return
+
+            if (self.left_distance is None and
+                    self.right_distance is None):
+                target_side_distance = nominal_width * 0.5
+                if (door_recess_geometry and
+                        left is not None and right is not None and
+                        left_flat and right_flat):
+                    left_recess_score = (
+                        abs(left -
+                            (target_side_distance +
+                             self.measured_door_recess_depth)) +
+                        abs(right - target_side_distance))
+                    right_recess_score = (
+                        abs(left - target_side_distance) +
+                        abs(right -
+                            (target_side_distance +
+                             self.measured_door_recess_depth)))
+                    hypotheses = sorted([
+                        ('right', left_recess_score),
+                        ('left', right_recess_score),
+                    ], key=lambda item: item[1])
+                    if (hypotheses[0][1] <=
+                            self.door_reacquire_score_limit and
+                            hypotheses[1][1] - hypotheses[0][1] >=
+                            self.door_reacquire_score_margin):
+                        intact_side = hypotheses[0][0]
+                        if intact_side == 'left':
+                            self.left_distance = left
+                        else:
+                            self.right_distance = right
+                        self.wall_mode = intact_side
+                        rospy.loginfo(
+                            "corridor_centering reacquired %s wall at "
+                            "measured door recess: left %.3f right %.3f "
+                            "target %.3f score %.3f",
+                            intact_side,
+                            left,
+                            right,
+                            target_side_distance,
+                            hypotheses[0][1])
+                        return
+
+                single_side_candidates = []
+                if ((left is None) != (right is None)):
+                    if left is not None and left_flat:
+                        single_side_candidates.append(
+                            ('left', abs(left - target_side_distance)))
+                    if right is not None and right_flat:
+                        single_side_candidates.append(
+                            ('right', abs(right - target_side_distance)))
+                single_side_candidates.sort(key=lambda item: item[1])
+                if (single_side_candidates and
+                        single_side_candidates[0][1] <=
+                        self.single_wall_match_tolerance and
+                        (len(single_side_candidates) == 1 or
+                         single_side_candidates[1][1] -
+                         single_side_candidates[0][1] >=
+                         self.single_wall_selection_margin)):
+                    intact_side = single_side_candidates[0][0]
+                    if intact_side == 'left':
+                        self.left_distance = left
+                    else:
+                        self.right_distance = right
+                    self.wall_mode = intact_side
+                    rospy.loginfo(
+                        "corridor_centering reacquired %s wall after reset: "
+                        "distance %.3f target %.3f",
+                        intact_side,
+                        left if intact_side == 'left' else right,
+                        target_side_distance)
+                    return
 
             wall_candidates = []
             if left is not None and self.left_distance is not None:
