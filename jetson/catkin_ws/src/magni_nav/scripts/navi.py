@@ -1596,6 +1596,70 @@ class DeliveryNavigator(object):
         self.stop_robot()
         return False
 
+    def drive_centered_to_map_location(self, location_name,
+                                       position_tolerance):
+        target_pose = locations[location_name]
+        for _attempt in range(HOME_DIRECT_APPROACH_MAX_ATTEMPTS):
+            if not self.refresh_localization_from_tf():
+                rospy.logerr(
+                    "Cannot calculate centered return to %s",
+                    console_text(location_name))
+                return False
+
+            position_error = math.hypot(
+                self.amcl_position[0] - target_pose[0],
+                self.amcl_position[1] - target_pose[1])
+            if position_error <= position_tolerance:
+                print("[navi] arrived at {} (position {:.3f} m)".format(
+                    console_text(location_name), position_error))
+                return True
+
+            if not self.align_toward_destination(location_name):
+                rospy.logerr(
+                    "Failed to align for centered return to %s",
+                    console_text(location_name))
+                return False
+            self.stop_robot()
+            rospy.sleep(0.3)
+
+            travel_distance = max(
+                0.0,
+                position_error - HOME_DIRECT_STOP_MARGIN)
+            timeout = max(
+                10.0,
+                travel_distance / HOME_DIRECT_APPROACH_SPEED + 10.0)
+            if not self.drive_straight_distance(
+                    "centered return to {}".format(
+                        console_text(location_name)),
+                    travel_distance,
+                    HOME_DIRECT_APPROACH_SPEED,
+                    timeout,
+                    use_corridor_centering=True):
+                return False
+            self.stop_robot()
+            rospy.sleep(0.5)
+
+        if not self.refresh_localization_from_tf():
+            rospy.logerr(
+                "Cannot verify centered return to %s",
+                console_text(location_name))
+            return False
+        position_error = math.hypot(
+            self.amcl_position[0] - target_pose[0],
+            self.amcl_position[1] - target_pose[1])
+        if position_error <= position_tolerance:
+            print("[navi] arrived at {} (position {:.3f} m)".format(
+                console_text(location_name), position_error))
+            return True
+
+        rospy.logerr(
+            "Centered return to %s did not converge: %.3f m "
+            "(limit %.3f m)",
+            console_text(location_name),
+            position_error,
+            position_tolerance)
+        return False
+
     def wait_for_fresh_front_scan(self, timeout):
         deadline = time.time() + timeout
         while not rospy.is_shutdown() and time.time() < deadline:
@@ -1905,89 +1969,17 @@ class DeliveryNavigator(object):
                 "Home-approach waypoint is missing: %s",
                 console_text(HOME_APPROACH_LOCATION_NAME))
             return False
-        home_approach = locations[HOME_APPROACH_LOCATION_NAME]
-        home_approach_yaw = math.atan2(
-            self.home_pose[1] - home_approach[1],
-            self.home_pose[0] - home_approach[0])
-        home_approach_pose = (
-            home_approach[0],
-            home_approach[1],
-            math.sin(home_approach_yaw * 0.5),
-            math.cos(home_approach_yaw * 0.5))
 
-        if not self.align_toward_destination(HOME_APPROACH_LOCATION_NAME):
-            rospy.logerr("Failed to align toward the home-approach waypoint")
-            return False
-        self.stop_robot()
-        rospy.sleep(0.5)
-
-        if not self.set_xy_goal_tolerance(
+        if not self.drive_centered_to_map_location(
+                HOME_APPROACH_LOCATION_NAME,
                 HOME_APPROACH_XY_GOAL_TOLERANCE):
+            rospy.logerr("Failed to reach the home-approach waypoint")
             return False
-        try:
-            if not self.move_to_goal(
-                    HOME_APPROACH_LOCATION_NAME,
-                    home_approach_pose,
-                    HOME_APPROACH_XY_GOAL_TOLERANCE,
-                    localization_guard=True):
-                return False
-        finally:
-            self.set_xy_goal_tolerance(CENTER_XY_GOAL_TOLERANCE)
 
-        self.stop_robot()
-        rospy.sleep(0.5)
-
-        home_translation_ok = False
-        for _attempt in range(HOME_DIRECT_APPROACH_MAX_ATTEMPTS):
-            if not self.refresh_localization_from_tf():
-                rospy.logerr(
-                    "Cannot calculate the final initial-position approach")
-                return False
-            home_position_error = math.hypot(
-                self.amcl_position[0] - self.home_pose[0],
-                self.amcl_position[1] - self.home_pose[1])
-            if home_position_error <= HOME_POSITION_VERIFY_TOLERANCE:
-                home_translation_ok = True
-                break
-
-            if not self.align_toward_destination(HOME_LOCATION_NAME):
-                rospy.logerr(
-                    "Failed to align for final initial-position approach")
-                return False
-            self.stop_robot()
-            rospy.sleep(0.3)
-
-            travel_distance = max(
-                0.0,
-                home_position_error - HOME_DIRECT_STOP_MARGIN)
-            timeout = max(
-                10.0,
-                travel_distance / HOME_DIRECT_APPROACH_SPEED + 10.0)
-            if not self.drive_straight_distance(
-                    "final approach to initial position",
-                    travel_distance,
-                    HOME_DIRECT_APPROACH_SPEED,
-                    timeout,
-                    use_corridor_centering=True):
-                return False
-            self.stop_robot()
-            rospy.sleep(0.5)
-
-        if not home_translation_ok:
-            if not self.refresh_localization_from_tf():
-                rospy.logerr(
-                    "Cannot verify the final initial-position approach")
-                return False
-            home_position_error = math.hypot(
-                self.amcl_position[0] - self.home_pose[0],
-                self.amcl_position[1] - self.home_pose[1])
-            home_translation_ok = (
-                home_position_error <= HOME_POSITION_VERIFY_TOLERANCE)
-        if not home_translation_ok:
-            rospy.logerr(
-                "Direct initial-position approach did not converge within "
-                "%d attempts",
-                HOME_DIRECT_APPROACH_MAX_ATTEMPTS)
+        if not self.drive_centered_to_map_location(
+                HOME_LOCATION_NAME,
+                HOME_POSITION_VERIFY_TOLERANCE):
+            rospy.logerr("Failed to reach the initial position")
             return False
 
         if not self.refresh_localization_from_tf():
