@@ -96,6 +96,10 @@ FRONT_SCAN_HALF_ANGLE = math.radians(10.0)
 FRONT_SCAN_WAIT_TIMEOUT = 2.0
 FRONT_SCAN_STALE_TIMEOUT = 0.5
 FRONT_SCAN_REQUIRED_STOPS = 3
+MOTION_OBSTACLE_HALF_ANGLE = math.radians(15.0)
+MOTION_OBSTACLE_CLEAR_SCANS = 5
+MOTION_OBSTACLE_RELEASE_MARGIN = 0.15
+MOTION_OBSTACLE_WAIT_LOG_INTERVAL = 2.0
 DOOR_DETECTION_HALF_ANGLE = math.radians(40.0)
 DOOR_EDGE_VIEW_MARGIN = math.radians(5.0)
 DOOR_BASELINE_PERCENTILE = 0.25
@@ -118,6 +122,7 @@ DOOR_CENTER_HISTORY_SIZE = 7
 DOOR_CENTER_STABLE_ANGLE = math.radians(3.0)
 DOOR_CENTER_STABLE_WIDTH = 0.20
 DOOR_CENTER_STABLE_DEPTH = 0.15
+DOOR_CENTER_STABLE_DISTANCE = 0.15
 DOOR_CENTER_WAIT_TIMEOUT = 2.5
 DOOR_CENTER_MAX_OFFSET = math.radians(25.0)
 DOOR_CENTER_YAW_TOLERANCE = math.radians(1.5)
@@ -127,6 +132,14 @@ DOOR_CENTER_ALIGN_TIMEOUT = 15.0
 DOOR_CENTER_MAX_ATTEMPTS = 2
 ROBOT_HALF_WIDTH = 0.385
 ROBOT_REAR_FROM_LIDAR = 0.52
+FRONT_MOTION_CLEARANCE = 0.60
+REAR_MOTION_CLEARANCE = 0.50
+FRONT_MOTION_STOP_DISTANCE = (
+    LIDAR_TO_FRONT_EDGE + FRONT_MOTION_CLEARANCE)
+REAR_MOTION_STOP_DISTANCE = (
+    ROBOT_REAR_FROM_LIDAR + REAR_MOTION_CLEARANCE)
+DOOR_UNEXPECTED_OBSTACLE_MARGIN = 0.25
+DOOR_UNEXPECTED_OBSTACLE_RELEASE_MARGIN = 0.20
 ROBOT_SELF_FILTER_MARGIN = 0.03
 ROTATION_CLEARANCE_MARGIN = 0.03
 ROTATION_CLEARANCE_RADIUS = (
@@ -260,9 +273,13 @@ class DeliveryNavigator(object):
         self.last_amcl_odom_yaw = None
         self.home_localization_bootstrap_available = True
         self.front_scan_distance = None
+        self.front_obstacle_distance = None
+        self.rear_obstacle_distance = None
         self.rotation_clearance_distance = None
         self.left_rotation_clearance_distance = None
         self.right_rotation_clearance_distance = None
+        self.last_scan_wall_time = None
+        self.scan_sequence = 0
         self.last_front_scan_wall_time = None
         self.front_scan_sequence = 0
         self.door_scan_lock = threading.Lock()
@@ -270,6 +287,7 @@ class DeliveryNavigator(object):
         self.door_center_angle = None
         self.door_center_width = None
         self.door_center_depth = None
+        self.door_center_surface_distance = None
         self.last_door_center_wall_time = None
         self.last_door_approach_distance = None
         cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
@@ -398,6 +416,12 @@ class DeliveryNavigator(object):
             len(distances) - 1)
         return distances[index]
 
+    def motion_obstacle_clearance(self, distances):
+        if len(distances) < ROTATION_CLEARANCE_REQUIRED_POINTS:
+            return None
+        distances.sort()
+        return distances[ROTATION_CLEARANCE_REQUIRED_POINTS - 1]
+
     def is_robot_self_return(self, measured_range, angle):
         point_x = measured_range * math.cos(angle)
         point_y = measured_range * math.sin(angle)
@@ -470,13 +494,14 @@ class DeliveryNavigator(object):
                 abs(center_angle),
                 center_angle,
                 door_width,
-                depth))
+                depth,
+                surface_x))
 
         if not candidates:
             return None
         candidates.sort(key=lambda candidate: candidate[0])
         selected = candidates[0]
-        return selected[1], selected[2], selected[3]
+        return selected[1], selected[2], selected[3], selected[4]
 
     def reset_door_center_detection(self):
         with self.door_scan_lock:
@@ -484,6 +509,7 @@ class DeliveryNavigator(object):
             self.door_center_angle = None
             self.door_center_width = None
             self.door_center_depth = None
+            self.door_center_surface_distance = None
             self.last_door_center_wall_time = None
 
     def update_door_center_detection(self, detection):
@@ -493,6 +519,7 @@ class DeliveryNavigator(object):
                 self.door_center_angle = None
                 self.door_center_width = None
                 self.door_center_depth = None
+                self.door_center_surface_distance = None
                 self.last_door_center_wall_time = None
                 return
 
@@ -507,27 +534,35 @@ class DeliveryNavigator(object):
             angles = [item[0] for item in recent]
             widths = [item[1] for item in recent]
             depths = [item[2] for item in recent]
+            surface_distances = [item[3] for item in recent]
             if (max(angles) - min(angles) >
                     DOOR_CENTER_STABLE_ANGLE or
                     max(widths) - min(widths) >
                     DOOR_CENTER_STABLE_WIDTH or
                     max(depths) - min(depths) >
-                    DOOR_CENTER_STABLE_DEPTH):
+                    DOOR_CENTER_STABLE_DEPTH or
+                    max(surface_distances) - min(surface_distances) >
+                    DOOR_CENTER_STABLE_DISTANCE):
                 return
 
             self.door_center_angle = self.percentile(angles, 0.50)
             self.door_center_width = self.percentile(widths, 0.50)
             self.door_center_depth = self.percentile(depths, 0.50)
+            self.door_center_surface_distance = self.percentile(
+                surface_distances, 0.50)
             self.last_door_center_wall_time = time.time()
 
     def scan_callback(self, msg):
         forward_distances = []
+        front_obstacle_distances = []
+        rear_obstacle_distances = []
         clearance_distances = []
         left_clearance_distances = []
         right_clearance_distances = []
         door_profile = []
         angle = msg.angle_min
         for measured_range in msg.ranges:
+            normalized_scan_angle = normalize_angle(angle)
             valid_range = (
                 not math.isnan(measured_range) and
                 not math.isinf(measured_range) and
@@ -550,6 +585,21 @@ class DeliveryNavigator(object):
                     angle += msg.angle_increment
                     continue
                 clearance_distances.append(measured_range)
+                if (abs(normalized_scan_angle) <=
+                        MOTION_OBSTACLE_HALF_ANGLE):
+                    forward_distance = (
+                        measured_range *
+                        math.cos(normalized_scan_angle))
+                    if forward_distance > 0.0:
+                        front_obstacle_distances.append(
+                            forward_distance)
+                if (abs(abs(normalized_scan_angle) - math.pi) <=
+                        MOTION_OBSTACLE_HALF_ANGLE):
+                    rear_distance = (
+                        -measured_range *
+                        math.cos(normalized_scan_angle))
+                    if rear_distance > 0.0:
+                        rear_obstacle_distances.append(rear_distance)
                 if SIDE_CLEARANCE_MIN_ANGLE <= angle <= SIDE_CLEARANCE_MAX_ANGLE:
                     left_clearance_distances.append(measured_range)
                 elif (-SIDE_CLEARANCE_MAX_ANGLE <= angle <=
@@ -564,7 +614,27 @@ class DeliveryNavigator(object):
         self.update_door_center_detection(
             self.detect_door_center(door_profile))
 
-        if not forward_distances or not clearance_distances:
+        self.front_obstacle_distance = self.motion_obstacle_clearance(
+            front_obstacle_distances)
+        self.rear_obstacle_distance = self.motion_obstacle_clearance(
+            rear_obstacle_distances)
+
+        if not clearance_distances:
+            return
+
+        clearance_distances.sort()
+        clearance_index = min(
+            ROTATION_CLEARANCE_REQUIRED_POINTS - 1,
+            len(clearance_distances) - 1)
+        self.rotation_clearance_distance = clearance_distances[clearance_index]
+        self.left_rotation_clearance_distance = self.directional_clearance(
+            left_clearance_distances)
+        self.right_rotation_clearance_distance = self.directional_clearance(
+            right_clearance_distances)
+        self.last_scan_wall_time = time.time()
+        self.scan_sequence += 1
+
+        if not forward_distances:
             return
 
         forward_distances.sort()
@@ -577,15 +647,6 @@ class DeliveryNavigator(object):
                 forward_distances[middle]) * 0.5
 
         self.front_scan_distance = median_distance
-        clearance_distances.sort()
-        clearance_index = min(
-            ROTATION_CLEARANCE_REQUIRED_POINTS - 1,
-            len(clearance_distances) - 1)
-        self.rotation_clearance_distance = clearance_distances[clearance_index]
-        self.left_rotation_clearance_distance = self.directional_clearance(
-            left_clearance_distances)
-        self.right_rotation_clearance_distance = self.directional_clearance(
-            right_clearance_distances)
         self.last_front_scan_wall_time = time.time()
         self.front_scan_sequence += 1
 
@@ -1110,21 +1171,13 @@ class DeliveryNavigator(object):
                           max_angular_speed=ALIGN_MAX_ANGULAR_SPEED,
                           timeout=ALIGN_TIMEOUT,
                           preferred_turn_direction=None):
-        if not self.wait_for_fresh_front_scan(FRONT_SCAN_WAIT_TIMEOUT):
+        if not self.wait_for_fresh_scan(FRONT_SCAN_WAIT_TIMEOUT):
             rospy.logerr(
                 "Fresh /scan data is required before direct rotation")
             self.stop_robot()
             return False
-        if (self.rotation_clearance_distance is None or
-                self.rotation_clearance_distance <
-                ROTATION_CLEARANCE_RADIUS):
-            rospy.logerr(
-                "Direct rotation refused: nearest surface %.3f m, "
-                "required %.3f m",
-                self.rotation_clearance_distance
-                if self.rotation_clearance_distance is not None else -1.0,
-                ROTATION_CLEARANCE_RADIUS)
-            self.stop_robot()
+        if self.wait_for_obstacle_clearance(
+                'rotation', action_text) is None:
             return False
 
         required_rotation = normalize_angle(target_yaw - self.amcl_yaw)
@@ -1160,23 +1213,14 @@ class DeliveryNavigator(object):
                 rospy.logerr("/odom stopped during direct rotation")
                 self.stop_robot()
                 return False
-            if (self.last_front_scan_wall_time is None or
-                    time.time() - self.last_front_scan_wall_time >
-                    FRONT_SCAN_STALE_TIMEOUT):
-                rospy.logerr("/scan stopped during direct rotation")
-                self.stop_robot()
+            waited = self.wait_for_obstacle_clearance(
+                'rotation', action_text)
+            if waited is None:
                 return False
-            if (self.rotation_clearance_distance is None or
-                    self.rotation_clearance_distance <
-                    ROTATION_CLEARANCE_RADIUS):
-                rospy.logerr(
-                    "Direct rotation stopped: nearest surface %.3f m, "
-                    "required %.3f m",
-                    self.rotation_clearance_distance
-                    if self.rotation_clearance_distance is not None else -1.0,
-                    ROTATION_CLEARANCE_RADIUS)
-                self.stop_robot()
-                return False
+            if waited > 0.0:
+                start_time += waited
+                last_odom_yaw = self.odom_yaw
+                continue
 
             odom_step = normalize_angle(self.odom_yaw - last_odom_yaw)
             accumulated_rotation += odom_step
@@ -1237,7 +1281,8 @@ class DeliveryNavigator(object):
                     return (
                         self.door_center_angle,
                         self.door_center_width,
-                        self.door_center_depth)
+                        self.door_center_depth,
+                        self.door_center_surface_distance)
             self.stop_robot()
             rospy.sleep(0.05)
         return None
@@ -1258,14 +1303,16 @@ class DeliveryNavigator(object):
                     console_text(room_name))
                 return True
 
-            center_angle, door_width, recess_depth = detection
+            (center_angle, door_width, recess_depth,
+             surface_distance) = detection
             print(
                 "[navi] {} door center: angle {:.1f} deg, "
-                "width {:.3f} m, recess {:.3f} m".format(
+                "width {:.3f} m, recess {:.3f} m, surface {:.3f} m".format(
                     console_text(room_name),
                     math.degrees(center_angle),
                     door_width,
-                    recess_depth))
+                    recess_depth,
+                    surface_distance))
 
             if abs(center_angle) <= DOOR_CENTER_YAW_TOLERANCE:
                 self.stop_robot()
@@ -1305,13 +1352,29 @@ class DeliveryNavigator(object):
 
     def ensure_room_rotation_clearance(self, room_name, center_target,
                                        center_pose):
-        if not self.wait_for_fresh_front_scan(FRONT_SCAN_WAIT_TIMEOUT):
+        if not self.wait_for_fresh_scan(FRONT_SCAN_WAIT_TIMEOUT):
             rospy.logerr(
                 "Fresh /scan data is required before checking room rotation")
             self.stop_robot()
             return False
         if self.rotation_clearance_is_safe():
             return True
+
+        distance_from_center = None
+        if self.refresh_localization_from_tf():
+            distance_from_center = math.hypot(
+                self.amcl_position[0] - center_pose[0],
+                self.amcl_position[1] - center_pose[1])
+        if (distance_from_center is not None and
+                distance_from_center <= CENTER_RECENTER_TOLERANCE):
+            rospy.logwarn(
+                "%s is centered but rotation space is temporarily "
+                "blocked; waiting for clearance",
+                console_text(room_name))
+            return self.wait_for_obstacle_clearance(
+                'rotation',
+                "rotation toward {}".format(
+                    console_text(room_name))) is not None
 
         rospy.logwarn(
             "%s rotation clearance is %.3f m (required %.3f m); "
@@ -1336,21 +1399,20 @@ class DeliveryNavigator(object):
 
         self.stop_robot()
         rospy.sleep(0.5)
-        if not self.wait_for_fresh_front_scan(FRONT_SCAN_WAIT_TIMEOUT):
+        if not self.wait_for_fresh_scan(FRONT_SCAN_WAIT_TIMEOUT):
             rospy.logerr(
                 "Fresh /scan data is required after re-centering %s",
                 console_text(room_name))
             return False
         if not self.rotation_clearance_is_safe():
-            rospy.logerr(
-                "%s rotation remains unsafe after re-centering: "
-                "%.3f m available, %.3f m required",
-                console_text(room_name),
-                self.rotation_clearance_distance
-                if self.rotation_clearance_distance is not None else -1.0,
-                ROTATION_CLEARANCE_RADIUS)
-            self.stop_robot()
-            return False
+            rospy.logwarn(
+                "%s rotation remains temporarily blocked after "
+                "re-centering; waiting without cancelling the mission",
+                console_text(room_name))
+            return self.wait_for_obstacle_clearance(
+                'rotation',
+                "rotation toward {}".format(
+                    console_text(room_name))) is not None
 
         print("[navi] {} rotation clearance restored at {:.3f} m".format(
             console_text(room_name), self.rotation_clearance_distance))
@@ -1529,12 +1591,17 @@ class DeliveryNavigator(object):
             rospy.logerr("Fresh /odom data is required for %s", description)
             self.stop_robot()
             return False
+        if not self.wait_for_fresh_scan(FRONT_SCAN_WAIT_TIMEOUT):
+            rospy.logerr("Fresh /scan data is required for %s", description)
+            self.stop_robot()
+            return False
 
         start_x, start_y = self.odom_position
         start_time = time.time()
         rate = rospy.Rate(20)
         command = Twist()
         command.linear.x = speed
+        motion_direction = 'rear' if speed < 0.0 else 'front'
 
         print("[navi] {}: {:.2f} m".format(description, distance))
 
@@ -1555,6 +1622,12 @@ class DeliveryNavigator(object):
                 rospy.logerr("/odom stopped during %s", description)
                 self.stop_robot()
                 return False
+
+            waited = self.wait_for_obstacle_clearance(
+                motion_direction, description)
+            if waited is None:
+                return False
+            start_time += waited
 
             current_x, current_y = self.odom_position
             traveled = math.hypot(current_x - start_x, current_y - start_y)
@@ -1591,6 +1664,135 @@ class DeliveryNavigator(object):
             rospy.sleep(0.05)
         return False
 
+    def wait_for_fresh_scan(self, timeout):
+        deadline = time.time() + timeout
+        while not rospy.is_shutdown() and time.time() < deadline:
+            if self.cancel_mission:
+                return False
+            if (self.last_scan_wall_time is not None and
+                    time.time() - self.last_scan_wall_time <=
+                    FRONT_SCAN_STALE_TIMEOUT):
+                return True
+            self.stop_robot()
+            rospy.sleep(0.05)
+        return False
+
+    def obstacle_distance(self, direction):
+        if direction == 'front':
+            return self.front_obstacle_distance
+        if direction == 'rear':
+            return self.rear_obstacle_distance
+        return self.rotation_clearance_distance
+
+    def obstacle_limits(self, direction):
+        if direction == 'front':
+            stop_distance = FRONT_MOTION_STOP_DISTANCE
+        elif direction == 'rear':
+            stop_distance = REAR_MOTION_STOP_DISTANCE
+        else:
+            stop_distance = ROTATION_CLEARANCE_RADIUS
+        return (
+            stop_distance,
+            stop_distance + MOTION_OBSTACLE_RELEASE_MARGIN)
+
+    def wait_for_obstacle_clearance(
+            self, direction, description,
+            stop_distance=None, release_distance=None):
+        if stop_distance is None or release_distance is None:
+            stop_distance, release_distance = self.obstacle_limits(
+                direction)
+
+        distance = self.obstacle_distance(direction)
+        scan_is_fresh = (
+            self.last_scan_wall_time is not None and
+            time.time() - self.last_scan_wall_time <=
+            FRONT_SCAN_STALE_TIMEOUT)
+        if scan_is_fresh and (
+                distance is None or distance > stop_distance):
+            return 0.0
+
+        wait_started = time.time()
+        last_sequence = self.scan_sequence
+        clear_count = 0
+        if scan_is_fresh:
+            rospy.logwarn(
+                "[OBSTACLE] %s blocked at %.3f m; waiting without "
+                "cancelling the mission",
+                description,
+                distance)
+        else:
+            rospy.logwarn(
+                "[OBSTACLE] /scan is stale during %s; waiting without "
+                "cancelling the mission",
+                description)
+
+        while not rospy.is_shutdown():
+            if self.cancel_mission:
+                self.stop_robot()
+                return None
+
+            self.stop_robot()
+            if self.paused:
+                self.wait_while_paused()
+                continue
+
+            now = time.time()
+            if (self.last_scan_wall_time is None or
+                    now - self.last_scan_wall_time >
+                    FRONT_SCAN_STALE_TIMEOUT):
+                clear_count = 0
+                rospy.logwarn_throttle(
+                    MOTION_OBSTACLE_WAIT_LOG_INTERVAL,
+                    "[OBSTACLE] waiting for a fresh /scan during %s",
+                    description)
+                rospy.sleep(0.05)
+                continue
+
+            if self.scan_sequence == last_sequence:
+                rospy.sleep(0.02)
+                continue
+            last_sequence = self.scan_sequence
+            distance = self.obstacle_distance(direction)
+            if distance is None or distance >= release_distance:
+                clear_count += 1
+            else:
+                clear_count = 0
+
+            if clear_count >= MOTION_OBSTACLE_CLEAR_SCANS:
+                waited = time.time() - wait_started
+                rospy.loginfo(
+                    "[OBSTACLE] %s cleared after %.1f seconds; "
+                    "resuming the same mission",
+                    description,
+                    waited)
+                return waited
+
+            rospy.logwarn_throttle(
+                MOTION_OBSTACLE_WAIT_LOG_INTERVAL,
+                "[OBSTACLE] %s still blocked at %s m",
+                description,
+                ("%.3f" % distance
+                 if distance is not None else "unknown"))
+
+        self.stop_robot()
+        return None
+
+    def wait_for_door_path_clearance(
+            self, expected_door_distance, description):
+        stop_distance = max(
+            0.0,
+            expected_door_distance -
+            DOOR_UNEXPECTED_OBSTACLE_MARGIN)
+        release_distance = max(
+            stop_distance,
+            expected_door_distance -
+            DOOR_UNEXPECTED_OBSTACLE_RELEASE_MARGIN)
+        return self.wait_for_obstacle_clearance(
+            'front',
+            description,
+            stop_distance,
+            release_distance)
+
     def drive_forward_to_door(self, room_name, maximum_distance):
         description = "approaching {}".format(console_text(room_name))
         self.last_door_approach_distance = None
@@ -1606,6 +1808,17 @@ class DeliveryNavigator(object):
             return False
 
         initial_front_distance = self.front_scan_distance
+        expected_door_distance = (
+            self.door_center_surface_distance
+            if self.door_center_surface_distance is not None
+            else initial_front_distance)
+        waited = self.wait_for_door_path_clearance(
+            expected_door_distance, description)
+        if waited is None:
+            return False
+        if waited > 0.0:
+            initial_front_distance = self.front_scan_distance
+
         if initial_front_distance <= LIDAR_DOOR_STOP_DISTANCE:
             self.last_door_approach_distance = 0.0
             self.stop_robot()
@@ -1618,7 +1831,7 @@ class DeliveryNavigator(object):
             return True
 
         expected_travel = (
-            initial_front_distance - LIDAR_DOOR_STOP_DISTANCE)
+            expected_door_distance - LIDAR_DOOR_STOP_DISTANCE)
         travel_limit = min(
             maximum_distance,
             expected_travel + LIDAR_APPROACH_LIMIT_MARGIN)
@@ -1656,14 +1869,23 @@ class DeliveryNavigator(object):
                 rospy.logerr("/odom stopped during %s", description)
                 self.stop_robot()
                 return False
-            if (self.last_front_scan_wall_time is None or
-                    now - self.last_front_scan_wall_time >
-                    FRONT_SCAN_STALE_TIMEOUT):
-                rospy.logerr("Front /scan stopped during %s", description)
-                self.stop_robot()
-                return False
-
             front_distance = self.front_scan_distance
+            current_x, current_y = self.odom_position
+            traveled = math.hypot(
+                current_x - start_x, current_y - start_y)
+            expected_surface_distance = max(
+                LIDAR_DOOR_STOP_DISTANCE,
+                expected_door_distance - traveled)
+            waited = self.wait_for_door_path_clearance(
+                expected_surface_distance, description)
+            if waited is None:
+                return False
+            if waited > 0.0:
+                start_time += waited
+                last_scan_sequence = self.front_scan_sequence
+                stopped_scan_count = 0
+                continue
+
             if self.front_scan_sequence != last_scan_sequence:
                 last_scan_sequence = self.front_scan_sequence
                 if front_distance <= LIDAR_DOOR_STOP_DISTANCE:
@@ -1689,8 +1911,6 @@ class DeliveryNavigator(object):
                 rate.sleep()
                 continue
 
-            current_x, current_y = self.odom_position
-            traveled = math.hypot(current_x - start_x, current_y - start_y)
             if traveled >= travel_limit:
                 rospy.logerr(
                     "%s stopped at safety travel limit %.3f m; "

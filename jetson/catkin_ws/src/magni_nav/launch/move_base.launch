@@ -45,6 +45,11 @@
     <param name="maximum_correction" value="0.06" />
     <param name="distance_filter_alpha" value="0.35" />
     <param name="scan_timeout" value="0.50" />
+    <param name="front_obstacle_half_angle_deg" value="15.0" />
+    <param name="minimum_front_clearance" value="0.60" />
+    <param name="obstacle_release_margin" value="0.15" />
+    <param name="obstacle_clear_samples" value="5" />
+    <param name="obstacle_minimum_samples" value="5" />
     <param name="minimum_edge_clearance" value="0.15" />
     <param name="near_wall_linear_speed" value="0.04" />
     <param name="near_wall_angular_speed" value="0.08" />
