@@ -118,7 +118,6 @@ DOOR_CENTER_HISTORY_SIZE = 7
 DOOR_CENTER_STABLE_ANGLE = math.radians(3.0)
 DOOR_CENTER_STABLE_WIDTH = 0.20
 DOOR_CENTER_STABLE_DEPTH = 0.15
-DOOR_CENTER_STABLE_DISTANCE = 0.15
 DOOR_CENTER_WAIT_TIMEOUT = 2.5
 DOOR_CENTER_MAX_OFFSET = math.radians(25.0)
 DOOR_CENTER_YAW_TOLERANCE = math.radians(1.5)
@@ -271,7 +270,6 @@ class DeliveryNavigator(object):
         self.door_center_angle = None
         self.door_center_width = None
         self.door_center_depth = None
-        self.door_center_surface_distance = None
         self.last_door_center_wall_time = None
         self.last_door_approach_distance = None
         cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
@@ -333,14 +331,6 @@ class DeliveryNavigator(object):
     def stop_robot(self):
         twist = Twist()
         cmd_vel_pub.publish(twist)
-
-    def interruptible_sleep(self, duration):
-        deadline = time.time() + duration
-        while not rospy.is_shutdown() and time.time() < deadline:
-            if self.cancel_mission:
-                return False
-            rospy.sleep(min(0.1, deadline - time.time()))
-        return not rospy.is_shutdown()
 
     def cancel_goal_if_active(self):
         try:
@@ -480,14 +470,13 @@ class DeliveryNavigator(object):
                 abs(center_angle),
                 center_angle,
                 door_width,
-                depth,
-                surface_x))
+                depth))
 
         if not candidates:
             return None
         candidates.sort(key=lambda candidate: candidate[0])
         selected = candidates[0]
-        return selected[1], selected[2], selected[3], selected[4]
+        return selected[1], selected[2], selected[3]
 
     def reset_door_center_detection(self):
         with self.door_scan_lock:
@@ -495,7 +484,6 @@ class DeliveryNavigator(object):
             self.door_center_angle = None
             self.door_center_width = None
             self.door_center_depth = None
-            self.door_center_surface_distance = None
             self.last_door_center_wall_time = None
 
     def update_door_center_detection(self, detection):
@@ -505,7 +493,6 @@ class DeliveryNavigator(object):
                 self.door_center_angle = None
                 self.door_center_width = None
                 self.door_center_depth = None
-                self.door_center_surface_distance = None
                 self.last_door_center_wall_time = None
                 return
 
@@ -520,22 +507,17 @@ class DeliveryNavigator(object):
             angles = [item[0] for item in recent]
             widths = [item[1] for item in recent]
             depths = [item[2] for item in recent]
-            surface_distances = [item[3] for item in recent]
             if (max(angles) - min(angles) >
                     DOOR_CENTER_STABLE_ANGLE or
                     max(widths) - min(widths) >
                     DOOR_CENTER_STABLE_WIDTH or
                     max(depths) - min(depths) >
-                    DOOR_CENTER_STABLE_DEPTH or
-                    max(surface_distances) - min(surface_distances) >
-                    DOOR_CENTER_STABLE_DISTANCE):
+                    DOOR_CENTER_STABLE_DEPTH):
                 return
 
             self.door_center_angle = self.percentile(angles, 0.50)
             self.door_center_width = self.percentile(widths, 0.50)
             self.door_center_depth = self.percentile(depths, 0.50)
-            self.door_center_surface_distance = self.percentile(
-                surface_distances, 0.50)
             self.last_door_center_wall_time = time.time()
 
     def scan_callback(self, msg):
@@ -582,19 +564,7 @@ class DeliveryNavigator(object):
         self.update_door_center_detection(
             self.detect_door_center(door_profile))
 
-        if not clearance_distances:
-            return
-
-        clearance_distances.sort()
-        clearance_index = min(
-            ROTATION_CLEARANCE_REQUIRED_POINTS - 1,
-            len(clearance_distances) - 1)
-        self.rotation_clearance_distance = clearance_distances[clearance_index]
-        self.left_rotation_clearance_distance = self.directional_clearance(
-            left_clearance_distances)
-        self.right_rotation_clearance_distance = self.directional_clearance(
-            right_clearance_distances)
-        if not forward_distances:
+        if not forward_distances or not clearance_distances:
             return
 
         forward_distances.sort()
@@ -607,6 +577,15 @@ class DeliveryNavigator(object):
                 forward_distances[middle]) * 0.5
 
         self.front_scan_distance = median_distance
+        clearance_distances.sort()
+        clearance_index = min(
+            ROTATION_CLEARANCE_REQUIRED_POINTS - 1,
+            len(clearance_distances) - 1)
+        self.rotation_clearance_distance = clearance_distances[clearance_index]
+        self.left_rotation_clearance_distance = self.directional_clearance(
+            left_clearance_distances)
+        self.right_rotation_clearance_distance = self.directional_clearance(
+            right_clearance_distances)
         self.last_front_scan_wall_time = time.time()
         self.front_scan_sequence += 1
 
@@ -1258,8 +1237,7 @@ class DeliveryNavigator(object):
                     return (
                         self.door_center_angle,
                         self.door_center_width,
-                        self.door_center_depth,
-                        self.door_center_surface_distance)
+                        self.door_center_depth)
             self.stop_robot()
             rospy.sleep(0.05)
         return None
@@ -1280,16 +1258,14 @@ class DeliveryNavigator(object):
                     console_text(room_name))
                 return True
 
-            (center_angle, door_width, recess_depth,
-             surface_distance) = detection
+            center_angle, door_width, recess_depth = detection
             print(
                 "[navi] {} door center: angle {:.1f} deg, "
-                "width {:.3f} m, recess {:.3f} m, surface {:.3f} m".format(
+                "width {:.3f} m, recess {:.3f} m".format(
                     console_text(room_name),
                     math.degrees(center_angle),
                     door_width,
-                    recess_depth,
-                    surface_distance))
+                    recess_depth))
 
             if abs(center_angle) <= DOOR_CENTER_YAW_TOLERANCE:
                 self.stop_robot()
@@ -1630,11 +1606,6 @@ class DeliveryNavigator(object):
             return False
 
         initial_front_distance = self.front_scan_distance
-        expected_door_distance = (
-            self.door_center_surface_distance
-            if self.door_center_surface_distance is not None
-            else initial_front_distance)
-
         if initial_front_distance <= LIDAR_DOOR_STOP_DISTANCE:
             self.last_door_approach_distance = 0.0
             self.stop_robot()
@@ -1647,7 +1618,7 @@ class DeliveryNavigator(object):
             return True
 
         expected_travel = (
-            expected_door_distance - LIDAR_DOOR_STOP_DISTANCE)
+            initial_front_distance - LIDAR_DOOR_STOP_DISTANCE)
         travel_limit = min(
             maximum_distance,
             expected_travel + LIDAR_APPROACH_LIMIT_MARGIN)
@@ -1693,10 +1664,6 @@ class DeliveryNavigator(object):
                 return False
 
             front_distance = self.front_scan_distance
-            current_x, current_y = self.odom_position
-            traveled = math.hypot(
-                current_x - start_x, current_y - start_y)
-
             if self.front_scan_sequence != last_scan_sequence:
                 last_scan_sequence = self.front_scan_sequence
                 if front_distance <= LIDAR_DOOR_STOP_DISTANCE:
@@ -1722,6 +1689,8 @@ class DeliveryNavigator(object):
                 rate.sleep()
                 continue
 
+            current_x, current_y = self.odom_position
+            traveled = math.hypot(current_x - start_x, current_y - start_y)
             if traveled >= travel_limit:
                 rospy.logerr(
                     "%s stopped at safety travel limit %.3f m; "
@@ -1901,10 +1870,9 @@ class DeliveryNavigator(object):
             self.waiting_for_item = False
 
     def return_to_initial_position(self):
-        self.publish_status("RETURNING")
         self.status_pub.publish("SCENARIO_9")
-        if not self.interruptible_sleep(3.0):
-            return False
+        rospy.sleep(3.0)
+        self.publish_status("RETURNING")
 
         if not self.backup_for_next_destination():
             rospy.logerr(
@@ -2074,7 +2042,7 @@ class DeliveryNavigator(object):
 
     def replace_active_mission(self, payload):
         rospy.logwarn(
-            "Replacing the active mission with new destinations: %s",
+            "Replacing the paused active mission with new destinations: %s",
             payload)
         self.cancel_mission = True
         self.paused = False
@@ -2179,22 +2147,15 @@ class DeliveryNavigator(object):
 
         if self.active_thread and self.active_thread.is_alive():
             self.cancel_pending_resume()
-            returning_to_home = self.current_state == "RETURNING"
             resumed_recently = (
                 self.last_resume_command_wall_time is not None and
                 time.time() - self.last_resume_command_wall_time <=
                 MISSION_REPLACE_AFTER_RESUME_WINDOW)
-            if (not self.paused and
-                    not resumed_recently and
-                    not returning_to_home):
+            if not self.paused and not resumed_recently:
                 rospy.logwarn(
                     "Mission already running. New command ignored: %s",
                     payload)
                 return
-            if returning_to_home:
-                rospy.loginfo(
-                    "New delivery received while returning home; "
-                    "replacing the return goal")
             if not self.replace_active_mission(payload):
                 return
 
