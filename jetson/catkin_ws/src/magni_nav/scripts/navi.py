@@ -332,6 +332,14 @@ class DeliveryNavigator(object):
         twist = Twist()
         cmd_vel_pub.publish(twist)
 
+    def interruptible_sleep(self, duration):
+        deadline = time.time() + duration
+        while not rospy.is_shutdown() and time.time() < deadline:
+            if self.cancel_mission:
+                return False
+            rospy.sleep(min(0.1, deadline - time.time()))
+        return not rospy.is_shutdown()
+
     def cancel_goal_if_active(self):
         try:
             state = self.client.get_state()
@@ -1870,9 +1878,10 @@ class DeliveryNavigator(object):
             self.waiting_for_item = False
 
     def return_to_initial_position(self):
-        self.status_pub.publish("SCENARIO_9")
-        rospy.sleep(3.0)
         self.publish_status("RETURNING")
+        self.status_pub.publish("SCENARIO_9")
+        if not self.interruptible_sleep(3.0):
+            return False
 
         if not self.backup_for_next_destination():
             rospy.logerr(
@@ -2042,7 +2051,7 @@ class DeliveryNavigator(object):
 
     def replace_active_mission(self, payload):
         rospy.logwarn(
-            "Replacing the paused active mission with new destinations: %s",
+            "Replacing the active mission with new destinations: %s",
             payload)
         self.cancel_mission = True
         self.paused = False
@@ -2147,15 +2156,22 @@ class DeliveryNavigator(object):
 
         if self.active_thread and self.active_thread.is_alive():
             self.cancel_pending_resume()
+            returning_to_home = self.current_state == "RETURNING"
             resumed_recently = (
                 self.last_resume_command_wall_time is not None and
                 time.time() - self.last_resume_command_wall_time <=
                 MISSION_REPLACE_AFTER_RESUME_WINDOW)
-            if not self.paused and not resumed_recently:
+            if (not self.paused and
+                    not resumed_recently and
+                    not returning_to_home):
                 rospy.logwarn(
                     "Mission already running. New command ignored: %s",
                     payload)
                 return
+            if returning_to_home:
+                rospy.loginfo(
+                    "New delivery received while returning home; "
+                    "replacing the return goal")
             if not self.replace_active_mission(payload):
                 return
 
