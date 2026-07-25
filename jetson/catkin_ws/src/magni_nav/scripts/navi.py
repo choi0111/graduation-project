@@ -53,6 +53,7 @@ locations = {
 }
 
 cmd_vel_pub = None
+cmd_vel_nav_pub = None
 
 CENTER_XY_GOAL_TOLERANCE = 1.00
 FINAL_XY_GOAL_TOLERANCE = 0.15
@@ -157,7 +158,11 @@ INITIAL_GOAL_BEHIND_ANGLE = math.pi * 0.5
 ITEM_RECEIPT_TIMEOUT = 20.0
 ITEM_PROMPT_TTS_WAIT_TIMEOUT = 30.0
 HOME_LOCATION_NAME = u"initial_home"
-HOME_XY_GOAL_TOLERANCE = 0.20
+HOME_APPROACH_LOCATION_NAME = u"544호_중앙"
+HOME_APPROACH_XY_GOAL_TOLERANCE = 0.45
+HOME_DIRECT_APPROACH_SPEED = 0.06
+HOME_DIRECT_STOP_MARGIN = 0.10
+HOME_DIRECT_APPROACH_MAX_ATTEMPTS = 2
 HOME_POSITION_VERIFY_TOLERANCE = 0.25
 HOME_YAW_VERIFY_TOLERANCE = math.radians(4.0)
 HOME_ALIGNMENT_MAX_ATTEMPTS = 2
@@ -248,7 +253,7 @@ def normalize_angle(angle):
 
 class DeliveryNavigator(object):
     def __init__(self):
-        global cmd_vel_pub
+        global cmd_vel_pub, cmd_vel_nav_pub
         rospy.init_node('navi_cmd_node')
         self.odom_position = None
         self.odom_yaw = None
@@ -273,6 +278,8 @@ class DeliveryNavigator(object):
         self.last_door_center_wall_time = None
         self.last_door_approach_distance = None
         cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
+        cmd_vel_nav_pub = rospy.Publisher(
+            '/cmd_vel_nav', Twist, queue_size=10)
         self.status_pub = rospy.Publisher('/robot_status', String, queue_size=10)
         self.command_sub = rospy.Subscriber('/llm_command', String, self.command_callback)
         self.tts_event_sub = rospy.Subscriber(
@@ -1528,7 +1535,8 @@ class DeliveryNavigator(object):
             NEXT_GOAL_MAX_ANGULAR_SPEED,
             NEXT_GOAL_ALIGN_TIMEOUT)
 
-    def drive_straight_distance(self, description, distance, speed, timeout):
+    def drive_straight_distance(self, description, distance, speed, timeout,
+                                use_corridor_centering=False):
         self.cancel_goal_if_active()
         self.stop_robot()
         rospy.sleep(0.2)
@@ -1579,7 +1587,10 @@ class DeliveryNavigator(object):
                 self.stop_robot()
                 return False
 
-            cmd_vel_pub.publish(command)
+            if use_corridor_centering:
+                cmd_vel_nav_pub.publish(command)
+            else:
+                cmd_vel_pub.publish(command)
             rate.sleep()
 
         self.stop_robot()
@@ -1888,19 +1899,36 @@ class DeliveryNavigator(object):
                 "Failed to back up before returning to the initial position")
             return False
         rospy.sleep(0.5)
-        if not self.align_toward_destination(HOME_LOCATION_NAME):
-            rospy.logerr("Failed to align toward the initial position")
+
+        if HOME_APPROACH_LOCATION_NAME not in locations:
+            rospy.logerr(
+                "Home-approach waypoint is missing: %s",
+                console_text(HOME_APPROACH_LOCATION_NAME))
+            return False
+        home_approach = locations[HOME_APPROACH_LOCATION_NAME]
+        home_approach_yaw = math.atan2(
+            self.home_pose[1] - home_approach[1],
+            self.home_pose[0] - home_approach[0])
+        home_approach_pose = (
+            home_approach[0],
+            home_approach[1],
+            math.sin(home_approach_yaw * 0.5),
+            math.cos(home_approach_yaw * 0.5))
+
+        if not self.align_toward_destination(HOME_APPROACH_LOCATION_NAME):
+            rospy.logerr("Failed to align toward the home-approach waypoint")
             return False
         self.stop_robot()
         rospy.sleep(0.5)
 
-        if not self.set_xy_goal_tolerance(HOME_XY_GOAL_TOLERANCE):
+        if not self.set_xy_goal_tolerance(
+                HOME_APPROACH_XY_GOAL_TOLERANCE):
             return False
         try:
             if not self.move_to_goal(
-                    HOME_LOCATION_NAME,
-                    self.home_pose,
-                    HOME_XY_GOAL_TOLERANCE,
+                    HOME_APPROACH_LOCATION_NAME,
+                    home_approach_pose,
+                    HOME_APPROACH_XY_GOAL_TOLERANCE,
                     localization_guard=True):
                 return False
         finally:
@@ -1908,6 +1936,60 @@ class DeliveryNavigator(object):
 
         self.stop_robot()
         rospy.sleep(0.5)
+
+        home_translation_ok = False
+        for _attempt in range(HOME_DIRECT_APPROACH_MAX_ATTEMPTS):
+            if not self.refresh_localization_from_tf():
+                rospy.logerr(
+                    "Cannot calculate the final initial-position approach")
+                return False
+            home_position_error = math.hypot(
+                self.amcl_position[0] - self.home_pose[0],
+                self.amcl_position[1] - self.home_pose[1])
+            if home_position_error <= HOME_POSITION_VERIFY_TOLERANCE:
+                home_translation_ok = True
+                break
+
+            if not self.align_toward_destination(HOME_LOCATION_NAME):
+                rospy.logerr(
+                    "Failed to align for final initial-position approach")
+                return False
+            self.stop_robot()
+            rospy.sleep(0.3)
+
+            travel_distance = max(
+                0.0,
+                home_position_error - HOME_DIRECT_STOP_MARGIN)
+            timeout = max(
+                10.0,
+                travel_distance / HOME_DIRECT_APPROACH_SPEED + 10.0)
+            if not self.drive_straight_distance(
+                    "final approach to initial position",
+                    travel_distance,
+                    HOME_DIRECT_APPROACH_SPEED,
+                    timeout,
+                    use_corridor_centering=True):
+                return False
+            self.stop_robot()
+            rospy.sleep(0.5)
+
+        if not home_translation_ok:
+            if not self.refresh_localization_from_tf():
+                rospy.logerr(
+                    "Cannot verify the final initial-position approach")
+                return False
+            home_position_error = math.hypot(
+                self.amcl_position[0] - self.home_pose[0],
+                self.amcl_position[1] - self.home_pose[1])
+            home_translation_ok = (
+                home_position_error <= HOME_POSITION_VERIFY_TOLERANCE)
+        if not home_translation_ok:
+            rospy.logerr(
+                "Direct initial-position approach did not converge within "
+                "%d attempts",
+                HOME_DIRECT_APPROACH_MAX_ATTEMPTS)
+            return False
+
         if not self.refresh_localization_from_tf():
             rospy.logerr(
                 "Cannot verify the robot pose at the initial position")
