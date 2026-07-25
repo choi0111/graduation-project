@@ -89,6 +89,10 @@ CENTER_POSITION_TOLERANCES = {
 COARSE_GOAL_FALLBACK_MARGIN = 0.10
 STAGING_LINE_ALONG_TOLERANCE = 0.20
 STAGING_LINE_CROSS_TOLERANCE = 0.40
+STAGING_LINE_CROSS_TOLERANCES = {
+    u"542호_중앙": 0.65,
+    u"542호_대형_중앙": 0.65,
+}
 STAGING_LINE_MISS_STOP_TOLERANCE = 0.10
 GOAL_PROGRESS_LOG_INTERVAL = 1.0
 LIDAR_TO_FRONT_EDGE = 0.11
@@ -98,6 +102,8 @@ FRONT_SCAN_HALF_ANGLE = math.radians(10.0)
 FRONT_SCAN_WAIT_TIMEOUT = 2.0
 FRONT_SCAN_STALE_TIMEOUT = 0.5
 FRONT_SCAN_REQUIRED_STOPS = 3
+REAR_SCAN_HALF_ANGLE = math.radians(10.0)
+REAR_WALL_CLEARANCE = 0.30
 DOOR_DETECTION_HALF_ANGLE = math.radians(40.0)
 DOOR_EDGE_VIEW_MARGIN = math.radians(5.0)
 DOOR_BASELINE_PERCENTILE = 0.25
@@ -130,6 +136,7 @@ DOOR_CENTER_MAX_ATTEMPTS = 2
 ROBOT_HALF_WIDTH = 0.385
 ROBOT_REAR_FROM_LIDAR = 0.52
 ROBOT_SELF_FILTER_MARGIN = 0.03
+LIDAR_REAR_STOP_DISTANCE = ROBOT_REAR_FROM_LIDAR + REAR_WALL_CLEARANCE
 ROTATION_CLEARANCE_MARGIN = 0.03
 ROTATION_CLEARANCE_RADIUS = (
     math.hypot(ROBOT_HALF_WIDTH, ROBOT_REAR_FROM_LIDAR) +
@@ -275,11 +282,13 @@ class DeliveryNavigator(object):
         self.last_amcl_odom_yaw = None
         self.home_localization_bootstrap_available = True
         self.front_scan_distance = None
+        self.rear_scan_distance = None
         self.rotation_clearance_distance = None
         self.left_rotation_clearance_distance = None
         self.right_rotation_clearance_distance = None
         self.last_front_scan_wall_time = None
         self.front_scan_sequence = 0
+        self.last_rear_scan_wall_time = None
         self.door_scan_lock = threading.Lock()
         self.door_center_history = []
         self.door_center_angle = None
@@ -561,6 +570,7 @@ class DeliveryNavigator(object):
 
     def scan_callback(self, msg):
         forward_distances = []
+        rear_distances = []
         clearance_distances = []
         left_clearance_distances = []
         right_clearance_distances = []
@@ -598,10 +608,28 @@ class DeliveryNavigator(object):
                     forward_distance = measured_range * math.cos(angle)
                     if forward_distance > 0.0:
                         forward_distances.append(forward_distance)
+                normalized_scan_angle = normalize_angle(angle)
+                if (abs(abs(normalized_scan_angle) - math.pi) <=
+                        REAR_SCAN_HALF_ANGLE):
+                    rear_distance = (
+                        -measured_range * math.cos(normalized_scan_angle))
+                    if rear_distance > 0.0:
+                        rear_distances.append(rear_distance)
             angle += msg.angle_increment
 
         self.update_door_center_detection(
             self.detect_door_center(door_profile))
+
+        if rear_distances:
+            rear_distances.sort()
+            rear_middle = len(rear_distances) // 2
+            if len(rear_distances) % 2:
+                self.rear_scan_distance = rear_distances[rear_middle]
+            else:
+                self.rear_scan_distance = (
+                    rear_distances[rear_middle - 1] +
+                    rear_distances[rear_middle]) * 0.5
+            self.last_rear_scan_wall_time = time.time()
 
         if not forward_distances or not clearance_distances:
             return
@@ -768,14 +796,19 @@ class DeliveryNavigator(object):
         if line_errors is None:
             return 0
         along_error, cross_error = line_errors
+        cross_tolerance = STAGING_LINE_CROSS_TOLERANCES.get(
+            location_name, STAGING_LINE_CROSS_TOLERANCE)
         if (along_error <= STAGING_LINE_ALONG_TOLERANCE and
-                cross_error <= STAGING_LINE_CROSS_TOLERANCE):
+                cross_error <= cross_tolerance):
             self.cancel_goal_if_active()
             self.stop_robot()
             print(
                 "[navi] arrived at {} (staging line: along {:.3f} m, "
-                "cross {:.3f} m)".format(
-                    console_text(location_name), along_error, cross_error))
+                "cross {:.3f} m, limit {:.3f} m)".format(
+                    console_text(location_name),
+                    along_error,
+                    cross_error,
+                    cross_tolerance))
             return 1
 
         if along_error <= STAGING_LINE_MISS_STOP_TOLERANCE:
@@ -783,10 +816,13 @@ class DeliveryNavigator(object):
             self.stop_robot()
             print(
                 "[navi] crossed {} too far from corridor center "
-                "(cross {:.3f} m at x {:.3f}, y {:.3f}); stopping for "
-                "waypoint calibration".format(
-                    console_text(location_name), cross_error,
-                    self.amcl_position[0], self.amcl_position[1]))
+                "(cross {:.3f} m, limit {:.3f} m at x {:.3f}, y {:.3f}); "
+                "stopping for waypoint calibration".format(
+                    console_text(location_name),
+                    cross_error,
+                    cross_tolerance,
+                    self.amcl_position[0],
+                    self.amcl_position[1]))
             return -1
         return 0
 
@@ -1592,6 +1628,12 @@ class DeliveryNavigator(object):
             rospy.logerr("Fresh /odom data is required for %s", description)
             stop_motion()
             return False
+        if speed < 0.0 and not self.wait_for_fresh_rear_scan(
+                FRONT_SCAN_WAIT_TIMEOUT):
+            rospy.logerr(
+                "Fresh rear /scan data is required before %s", description)
+            stop_motion()
+            return False
 
         start_x, start_y = self.odom_position
         start_time = time.time()
@@ -1618,6 +1660,25 @@ class DeliveryNavigator(object):
                 rospy.logerr("/odom stopped during %s", description)
                 stop_motion()
                 return False
+            if speed < 0.0:
+                if (self.last_rear_scan_wall_time is None or
+                        time.time() - self.last_rear_scan_wall_time >
+                        FRONT_SCAN_STALE_TIMEOUT):
+                    rospy.logerr("Rear /scan stopped during %s", description)
+                    stop_motion()
+                    return False
+                if self.rear_scan_distance <= LIDAR_REAR_STOP_DISTANCE:
+                    rear_gap = max(
+                        0.0,
+                        self.rear_scan_distance - ROBOT_REAR_FROM_LIDAR)
+                    rospy.logwarn(
+                        "%s stopped by rear-wall guard: rear gap %.3f m "
+                        "(minimum %.3f m)",
+                        description,
+                        rear_gap,
+                        REAR_WALL_CLEARANCE)
+                    stop_motion()
+                    return False
 
             current_x, current_y = self.odom_position
             traveled = math.hypot(current_x - start_x, current_y - start_y)
@@ -1638,6 +1699,20 @@ class DeliveryNavigator(object):
             rate.sleep()
 
         stop_motion()
+        return False
+
+    def wait_for_fresh_rear_scan(self, timeout):
+        deadline = time.time() + timeout
+        while not rospy.is_shutdown() and time.time() < deadline:
+            if self.cancel_mission:
+                return False
+            if (self.rear_scan_distance is not None and
+                    self.last_rear_scan_wall_time is not None and
+                    time.time() - self.last_rear_scan_wall_time <=
+                    FRONT_SCAN_STALE_TIMEOUT):
+                return True
+            self.stop_robot()
+            rospy.sleep(0.05)
         return False
 
     def drive_corridor_to_home(self, target_pose=None,
@@ -1933,13 +2008,22 @@ class DeliveryNavigator(object):
         return False
 
     def backup_for_next_destination(self):
-        backup_distance = self.last_door_approach_distance
-        if backup_distance is None:
+        recorded_distance = self.last_door_approach_distance
+        if recorded_distance is None:
             rospy.logwarn(
                 "No successful door-approach distance was recorded; "
                 "using the %.2f m legacy backup distance",
                 NEXT_GOAL_BACKUP_DISTANCE)
             backup_distance = NEXT_GOAL_BACKUP_DISTANCE
+        else:
+            backup_distance = min(
+                recorded_distance, NEXT_GOAL_BACKUP_DISTANCE)
+            if recorded_distance > backup_distance:
+                rospy.loginfo(
+                    "Door approach was %.3f m; limiting backup to %.3f m "
+                    "to avoid crossing the corridor toward the rear wall",
+                    recorded_distance,
+                    backup_distance)
 
         if backup_distance <= 0.01:
             print(
@@ -1952,7 +2036,7 @@ class DeliveryNavigator(object):
             NEXT_GOAL_BACKUP_TIMEOUT,
             backup_distance / abs(NEXT_GOAL_BACKUP_SPEED) + 5.0)
         success = self.drive_straight_distance(
-            "backing up by the recorded door approach distance",
+            "backing up for safe turning clearance",
             backup_distance,
             -NEXT_GOAL_BACKUP_SPEED,
             timeout)
