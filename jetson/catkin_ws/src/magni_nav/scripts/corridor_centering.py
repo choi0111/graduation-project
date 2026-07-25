@@ -60,8 +60,8 @@ class CorridorCentering(object):
             '~distance_filter_alpha', 0.35)
         self.scan_timeout = rospy.get_param(
             '~scan_timeout', 0.50)
-        self.front_obstacle_half_angle = math.radians(rospy.get_param(
-            '~front_obstacle_half_angle_deg', 15.0))
+        self.obstacle_path_margin = rospy.get_param(
+            '~obstacle_path_margin', 0.10)
         self.minimum_front_clearance = rospy.get_param(
             '~minimum_front_clearance', 0.60)
         self.obstacle_release_margin = rospy.get_param(
@@ -174,11 +174,14 @@ class CorridorCentering(object):
                     measured_range >= msg.range_min and
                     measured_range <= msg.range_max and
                     not self.is_robot_self_return(measured_range, angle)):
+                point_x = measured_range * math.cos(angle)
+                point_y = measured_range * math.sin(angle)
+                if (point_x > self.robot_front_from_lidar and
+                        abs(point_y) <=
+                        self.robot_half_width +
+                        self.obstacle_path_margin):
+                    front_obstacle_samples.append(point_x)
                 absolute_angle = abs(angle)
-                if absolute_angle <= self.front_obstacle_half_angle:
-                    forward_distance = measured_range * math.cos(angle)
-                    if forward_distance > 0.0:
-                        front_obstacle_samples.append(forward_distance)
                 if (self.side_min_angle <= absolute_angle <=
                         self.side_max_angle):
                     lateral_distance = (

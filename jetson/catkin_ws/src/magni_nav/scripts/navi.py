@@ -96,7 +96,7 @@ FRONT_SCAN_HALF_ANGLE = math.radians(10.0)
 FRONT_SCAN_WAIT_TIMEOUT = 2.0
 FRONT_SCAN_STALE_TIMEOUT = 0.5
 FRONT_SCAN_REQUIRED_STOPS = 3
-MOTION_OBSTACLE_HALF_ANGLE = math.radians(15.0)
+MOTION_OBSTACLE_PATH_MARGIN = 0.10
 MOTION_OBSTACLE_CLEAR_SCANS = 5
 MOTION_OBSTACLE_RELEASE_MARGIN = 0.15
 MOTION_OBSTACLE_WAIT_LOG_INTERVAL = 2.0
@@ -593,21 +593,21 @@ class DeliveryNavigator(object):
                     angle += msg.angle_increment
                     continue
                 clearance_distances.append(measured_range)
-                if (abs(normalized_scan_angle) <=
-                        MOTION_OBSTACLE_HALF_ANGLE):
-                    forward_distance = (
-                        measured_range *
-                        math.cos(normalized_scan_angle))
-                    if forward_distance > 0.0:
-                        front_obstacle_distances.append(
-                            forward_distance)
-                if (abs(abs(normalized_scan_angle) - math.pi) <=
-                        MOTION_OBSTACLE_HALF_ANGLE):
-                    rear_distance = (
-                        -measured_range *
-                        math.cos(normalized_scan_angle))
-                    if rear_distance > 0.0:
-                        rear_obstacle_distances.append(rear_distance)
+                point_x = (
+                    measured_range *
+                    math.cos(normalized_scan_angle))
+                point_y = (
+                    measured_range *
+                    math.sin(normalized_scan_angle))
+                obstacle_half_width = (
+                    ROBOT_HALF_WIDTH +
+                    MOTION_OBSTACLE_PATH_MARGIN)
+                if (point_x > LIDAR_TO_FRONT_EDGE and
+                        abs(point_y) <= obstacle_half_width):
+                    front_obstacle_distances.append(point_x)
+                if (point_x < -ROBOT_REAR_FROM_LIDAR and
+                        abs(point_y) <= obstacle_half_width):
+                    rear_obstacle_distances.append(-point_x)
                 if SIDE_CLEARANCE_MIN_ANGLE <= angle <= SIDE_CLEARANCE_MAX_ANGLE:
                     left_clearance_distances.append(measured_range)
                 elif (-SIDE_CLEARANCE_MAX_ANGLE <= angle <=
