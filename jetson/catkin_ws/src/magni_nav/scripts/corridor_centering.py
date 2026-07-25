@@ -29,7 +29,7 @@ class CorridorCentering(object):
         self.expected_corridor_width = rospy.get_param(
             '~expected_corridor_width', 2.36)
         self.corridor_width_tolerance = rospy.get_param(
-            '~corridor_width_tolerance', 0.10)
+            '~corridor_width_tolerance', 0.15)
         self.acquisition_width_spread = rospy.get_param(
             '~acquisition_width_spread', 0.10)
         self.wall_flatness_tolerance = rospy.get_param(
@@ -61,7 +61,7 @@ class CorridorCentering(object):
         self.scan_timeout = rospy.get_param(
             '~scan_timeout', 0.50)
         self.minimum_edge_clearance = rospy.get_param(
-            '~minimum_edge_clearance', 0.15)
+            '~minimum_edge_clearance', 0.25)
         self.near_wall_linear_speed = rospy.get_param(
             '~near_wall_linear_speed', 0.04)
         self.near_wall_angular_speed = rospy.get_param(
@@ -394,7 +394,7 @@ class CorridorCentering(object):
                     -self.maximum_correction,
                     self.maximum_correction)
             command.angular.z = self.clamp(
-                msg.angular.z + correction,
+                correction,
                 -self.maximum_output_angular_speed,
                 self.maximum_output_angular_speed)
             if wall_mode == 'both':

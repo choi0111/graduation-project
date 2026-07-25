@@ -29,7 +29,7 @@
     <param name="corridor_min_width" value="2.20" />
     <param name="corridor_max_width" value="2.50" />
     <param name="expected_corridor_width" value="2.36" />
-    <param name="corridor_width_tolerance" value="0.10" />
+    <param name="corridor_width_tolerance" value="0.15" />
     <param name="acquisition_width_spread" value="0.10" />
     <param name="wall_flatness_tolerance" value="0.10" />
     <param name="normal_confirmation_samples" value="8" />
@@ -45,7 +45,7 @@
     <param name="maximum_correction" value="0.06" />
     <param name="distance_filter_alpha" value="0.35" />
     <param name="scan_timeout" value="0.50" />
-    <param name="minimum_edge_clearance" value="0.15" />
+    <param name="minimum_edge_clearance" value="0.25" />
     <param name="near_wall_linear_speed" value="0.04" />
     <param name="near_wall_angular_speed" value="0.08" />
     <param name="robot_front_from_lidar" value="0.11" />
