@@ -168,6 +168,10 @@ HOME_ALIGNMENT_MAX_ATTEMPTS = 2
 HOME_CORRIDOR_SPEED = 0.08
 HOME_FINAL_APPROACH_SPEED = 0.04
 HOME_FINAL_APPROACH_DISTANCE = 1.50
+HOME_PREALIGN_DISTANCE = 0.90
+HOME_PREALIGN_POSITION_TOLERANCE = 0.18
+HOME_PREALIGN_CROSS_TRACK_LIMIT = 0.22
+HOME_REVERSE_STOP_MARGIN = 0.08
 HOME_FINAL_DRIVE_HEADING_ERROR = math.radians(8.0)
 HOME_CORRIDOR_HEADING_KP = 0.60
 HOME_CORRIDOR_MAX_ANGULAR_SPEED = 0.05
@@ -1638,10 +1642,16 @@ class DeliveryNavigator(object):
         stop_motion()
         return False
 
-    def drive_corridor_to_home(self):
+    def drive_corridor_to_home(self, target_pose=None,
+                               target_name=HOME_LOCATION_NAME,
+                               position_tolerance=
+                               HOME_POSITION_VERIFY_TOLERANCE):
         self.cancel_goal_if_active()
         self.stop_corridor_drive()
         rospy.sleep(0.2)
+
+        if target_pose is None:
+            target_pose = self.home_pose
 
         if not self.wait_for_fresh_odom(ODOM_WAIT_TIMEOUT):
             rospy.logerr(
@@ -1655,8 +1665,8 @@ class DeliveryNavigator(object):
             return False
 
         start_distance = math.hypot(
-            self.home_pose[0] - self.amcl_position[0],
-            self.home_pose[1] - self.amcl_position[1])
+            target_pose[0] - self.amcl_position[0],
+            target_pose[1] - self.amcl_position[1])
         best_distance = start_distance
         timeout = (
             start_distance / HOME_FINAL_APPROACH_SPEED +
@@ -1667,8 +1677,9 @@ class DeliveryNavigator(object):
         rate = rospy.Rate(10)
 
         print(
-            "[navi] returning to initial_home with corridor control "
-            "({:.3f} m)".format(start_distance))
+            "[navi] returning to {} with corridor control "
+            "({:.3f} m)".format(
+                console_text(target_name), start_distance))
 
         while not rospy.is_shutdown():
             if self.cancel_mission:
@@ -1701,33 +1712,36 @@ class DeliveryNavigator(object):
                     return False
 
             current_x, current_y = self.amcl_position
-            delta_x = self.home_pose[0] - current_x
-            delta_y = self.home_pose[1] - current_y
+            delta_x = target_pose[0] - current_x
+            delta_y = target_pose[1] - current_y
             distance = math.hypot(delta_x, delta_y)
             best_distance = min(best_distance, distance)
 
-            if distance <= HOME_POSITION_VERIFY_TOLERANCE:
+            if distance <= position_tolerance:
                 self.stop_corridor_drive()
                 print(
                     "[navi] corridor-controlled return reached "
-                    "initial_home at {:.3f} m".format(distance))
+                    "{} at {:.3f} m".format(
+                        console_text(target_name), distance))
                 return True
 
             if distance > (
                     best_distance + HOME_CORRIDOR_PROGRESS_LOSS_LIMIT):
                 rospy.logerr(
                     "Corridor-controlled return moved away from home: "
-                    "%.3f m (best %.3f m)",
+                    "%.3f m (best %.3f m) while targeting %s",
                     distance,
-                    best_distance)
+                    best_distance,
+                    console_text(target_name))
                 self.stop_corridor_drive()
                 return False
 
             if time.time() - start_time > timeout:
                 rospy.logerr(
                     "Corridor-controlled return timed out at %.3f m "
-                    "from home",
-                    distance)
+                    "from %s",
+                    distance,
+                    console_text(target_name))
                 self.stop_corridor_drive()
                 return False
 
@@ -1739,8 +1753,9 @@ class DeliveryNavigator(object):
                 self.stop_corridor_drive()
                 final_approach_started = True
                 rospy.loginfo(
-                    "Initial-home final approach started at %.3f m; "
+                    "%s final approach started at %.3f m; "
                     "corridor centering bypassed",
+                    console_text(target_name),
                     distance)
 
             command = Twist()
@@ -1767,9 +1782,11 @@ class DeliveryNavigator(object):
             now = time.time()
             if now - last_progress_log >= GOAL_PROGRESS_LOG_INTERVAL:
                 print(
-                    "[navi] initial_home corridor return distance "
-                    "{:.3f} m heading error {:.1f} deg".format(
-                        distance, math.degrees(heading_error)))
+                    "[navi] {} corridor return distance {:.3f} m "
+                    "heading error {:.1f} deg".format(
+                        console_text(target_name),
+                        distance,
+                        math.degrees(heading_error)))
                 last_progress_log = now
             rate.sleep()
 
@@ -2094,28 +2111,44 @@ class DeliveryNavigator(object):
             "Home-return heading aligned; corridor centering will reacquire "
             "walls before passing the return command")
 
-        if not self.drive_corridor_to_home():
+        # Turn in the open corridor, then reverse into the fixed home pose.
+        home_heading_x = math.cos(self.home_yaw)
+        home_heading_y = math.sin(self.home_yaw)
+        prealign_pose = (
+            self.home_pose[0] + HOME_PREALIGN_DISTANCE * home_heading_x,
+            self.home_pose[1] + HOME_PREALIGN_DISTANCE * home_heading_y,
+            self.home_pose[2],
+            self.home_pose[3])
+        prealign_name = u"initial_home_prealign"
+
+        if not self.drive_corridor_to_home(
+                prealign_pose,
+                prealign_name,
+                HOME_PREALIGN_POSITION_TOLERANCE):
             rospy.logerr(
-                "Corridor-controlled return to the initial position failed")
+                "Corridor-controlled return to the initial-position "
+                "pre-alignment point failed")
             return False
 
         if not self.refresh_localization_from_tf():
             rospy.logerr(
-                "Cannot verify the robot pose at the initial position")
+                "Cannot verify the robot pose at the initial-position "
+                "pre-alignment point")
             return False
-        home_position_error = math.hypot(
-            self.amcl_position[0] - self.home_pose[0],
-            self.amcl_position[1] - self.home_pose[1])
-        if home_position_error > HOME_POSITION_VERIFY_TOLERANCE:
+        prealign_position_error = math.hypot(
+            self.amcl_position[0] - prealign_pose[0],
+            self.amcl_position[1] - prealign_pose[1])
+        if prealign_position_error > HOME_PREALIGN_POSITION_TOLERANCE:
             rospy.logerr(
-                "Initial-position verification failed: %.3f m from home "
+                "Initial-position pre-alignment verification failed: "
+                "%.3f m from target "
                 "(limit %.3f m)",
-                home_position_error,
-                HOME_POSITION_VERIFY_TOLERANCE)
+                prealign_position_error,
+                HOME_PREALIGN_POSITION_TOLERANCE)
             return False
         rospy.loginfo(
-            "Initial-position translation verified at %.3f m error",
-            home_position_error)
+            "Initial-position pre-alignment point verified at %.3f m error",
+            prealign_position_error)
 
         home_alignment_ok = False
         for _attempt in range(HOME_ALIGNMENT_MAX_ATTEMPTS):
@@ -2131,7 +2164,7 @@ class DeliveryNavigator(object):
             if not self.rotate_to_map_yaw(
                     HOME_LOCATION_NAME,
                     self.home_yaw,
-                    "aligning at initial position",
+                    "aligning before reversing into initial position",
                     NEXT_GOAL_MIN_ANGULAR_SPEED,
                     NEXT_GOAL_MAX_ANGULAR_SPEED,
                     NEXT_GOAL_ALIGN_TIMEOUT,
@@ -2153,6 +2186,50 @@ class DeliveryNavigator(object):
             rospy.logerr(
                 "Initial heading did not converge within %d attempts",
                 HOME_ALIGNMENT_MAX_ATTEMPTS)
+            return False
+
+        if not self.refresh_localization_from_tf():
+            rospy.logerr(
+                "Cannot calculate the final reverse into the initial position")
+            return False
+        # Resolve the fixed home offset in the configured home-heading frame.
+        delta_home_x = self.home_pose[0] - self.amcl_position[0]
+        delta_home_y = self.home_pose[1] - self.amcl_position[1]
+        home_forward_component = (
+            home_heading_x * delta_home_x +
+            home_heading_y * delta_home_y)
+        home_cross_track = (
+            -home_heading_y * delta_home_x +
+            home_heading_x * delta_home_y)
+        if home_forward_component >= 0.0:
+            rospy.logerr(
+                "Initial position is not behind the aligned robot: "
+                "forward component %.3f m",
+                home_forward_component)
+            return False
+        if abs(home_cross_track) > HOME_PREALIGN_CROSS_TRACK_LIMIT:
+            rospy.logerr(
+                "Initial-position reverse refused: cross-track error %.3f m "
+                "exceeds %.3f m",
+                home_cross_track,
+                HOME_PREALIGN_CROSS_TRACK_LIMIT)
+            return False
+
+        reverse_distance = max(
+            0.0,
+            -home_forward_component - HOME_REVERSE_STOP_MARGIN)
+        rospy.loginfo(
+            "Reversing %.3f m into fixed initial position "
+            "(cross-track %.3f m)",
+            reverse_distance,
+            home_cross_track)
+        if reverse_distance > 0.0 and not self.drive_straight_distance(
+                "reversing into fixed initial position",
+                reverse_distance,
+                -HOME_FINAL_APPROACH_SPEED,
+                reverse_distance / HOME_FINAL_APPROACH_SPEED + 8.0):
+            rospy.logerr(
+                "Failed to reverse into the fixed initial position")
             return False
 
         if not self.refresh_localization_from_tf():
