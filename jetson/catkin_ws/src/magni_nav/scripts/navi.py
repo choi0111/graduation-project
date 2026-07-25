@@ -1614,7 +1614,8 @@ class DeliveryNavigator(object):
         return success
 
     def drive_straight_distance(self, description, distance, speed, timeout,
-                                use_corridor_centering=False):
+                                use_corridor_centering=False,
+                                rear_guard_completes_motion=False):
         self.cancel_goal_if_active()
         stop_motion = (
             self.stop_corridor_drive
@@ -1678,6 +1679,14 @@ class DeliveryNavigator(object):
                         rear_gap,
                         REAR_WALL_CLEARANCE)
                     stop_motion()
+                    if rear_guard_completes_motion:
+                        current_x, current_y = self.odom_position
+                        traveled = math.hypot(
+                            current_x - start_x, current_y - start_y)
+                        print(
+                            "[navi] {} complete at {:.3f} m by rear-wall "
+                            "guard".format(description, traveled))
+                        return True
                     return False
 
             current_x, current_y = self.odom_position
@@ -2016,14 +2025,7 @@ class DeliveryNavigator(object):
                 NEXT_GOAL_BACKUP_DISTANCE)
             backup_distance = NEXT_GOAL_BACKUP_DISTANCE
         else:
-            backup_distance = min(
-                recorded_distance, NEXT_GOAL_BACKUP_DISTANCE)
-            if recorded_distance > backup_distance:
-                rospy.loginfo(
-                    "Door approach was %.3f m; limiting backup to %.3f m "
-                    "to avoid crossing the corridor toward the rear wall",
-                    recorded_distance,
-                    backup_distance)
+            backup_distance = recorded_distance
 
         if backup_distance <= 0.01:
             print(
@@ -2039,7 +2041,8 @@ class DeliveryNavigator(object):
             "backing up for safe turning clearance",
             backup_distance,
             -NEXT_GOAL_BACKUP_SPEED,
-            timeout)
+            timeout,
+            rear_guard_completes_motion=True)
         if success:
             self.last_door_approach_distance = None
         return success
