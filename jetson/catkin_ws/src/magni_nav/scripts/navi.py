@@ -164,7 +164,8 @@ HOME_YAW_VERIFY_TOLERANCE = math.radians(4.0)
 HOME_ALIGNMENT_MAX_ATTEMPTS = 2
 HOME_CORRIDOR_SPEED = 0.08
 HOME_FINAL_APPROACH_SPEED = 0.04
-HOME_FINAL_APPROACH_DISTANCE = 1.00
+HOME_FINAL_APPROACH_DISTANCE = 1.50
+HOME_FINAL_DRIVE_HEADING_ERROR = math.radians(8.0)
 HOME_CORRIDOR_HEADING_KP = 0.60
 HOME_CORRIDOR_MAX_ANGULAR_SPEED = 0.05
 HOME_CORRIDOR_MAX_HEADING_ERROR = math.radians(20.0)
@@ -1647,6 +1648,7 @@ class DeliveryNavigator(object):
             HOME_CORRIDOR_TIMEOUT_MARGIN)
         start_time = time.time()
         last_progress_log = 0.0
+        final_approach_started = False
         rate = rospy.Rate(10)
 
         print(
@@ -1716,12 +1718,25 @@ class DeliveryNavigator(object):
 
             target_yaw = math.atan2(delta_y, delta_x)
             heading_error = normalize_angle(target_yaw - self.amcl_yaw)
+
+            if (not final_approach_started and
+                    distance <= HOME_FINAL_APPROACH_DISTANCE):
+                self.stop_corridor_drive()
+                final_approach_started = True
+                rospy.loginfo(
+                    "Initial-home final approach started at %.3f m; "
+                    "corridor centering bypassed",
+                    distance)
+
             command = Twist()
             command.linear.x = (
                 HOME_FINAL_APPROACH_SPEED
-                if distance <= HOME_FINAL_APPROACH_DISTANCE
+                if final_approach_started
                 else HOME_CORRIDOR_SPEED)
-            if abs(heading_error) >= HOME_CORRIDOR_MAX_HEADING_ERROR:
+            if final_approach_started:
+                if abs(heading_error) >= HOME_FINAL_DRIVE_HEADING_ERROR:
+                    command.linear.x = 0.0
+            elif abs(heading_error) >= HOME_CORRIDOR_MAX_HEADING_ERROR:
                 command.linear.x = min(
                     command.linear.x, HOME_FINAL_APPROACH_SPEED)
             command.angular.z = max(
@@ -1729,7 +1744,10 @@ class DeliveryNavigator(object):
                 min(
                     HOME_CORRIDOR_MAX_ANGULAR_SPEED,
                     HOME_CORRIDOR_HEADING_KP * heading_error))
-            cmd_vel_nav_pub.publish(command)
+            if final_approach_started:
+                cmd_vel_pub.publish(command)
+            else:
+                cmd_vel_nav_pub.publish(command)
 
             now = time.time()
             if now - last_progress_log >= GOAL_PROGRESS_LOG_INTERVAL:
