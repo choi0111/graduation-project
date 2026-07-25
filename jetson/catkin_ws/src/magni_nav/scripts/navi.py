@@ -99,10 +99,19 @@ FRONT_SCAN_REQUIRED_STOPS = 3
 DOOR_DETECTION_HALF_ANGLE = math.radians(40.0)
 DOOR_EDGE_VIEW_MARGIN = math.radians(5.0)
 DOOR_BASELINE_PERCENTILE = 0.25
-DOOR_RECESS_MIN_DEPTH = 0.10
-DOOR_RECESS_MAX_DEPTH = 0.80
-DOOR_WIDTH_MIN = 0.65
-DOOR_WIDTH_MAX = 1.60
+# Measured at the delivery-room doors. Keep enough tolerance for scan angle,
+# door-frame returns, and measurement error while rejecting substantially
+# different elevator and emergency-exit recesses.
+MEASURED_DOOR_RECESS_DEPTH = 0.175
+DOOR_RECESS_DEPTH_TOLERANCE = 0.10
+DOOR_RECESS_MIN_DEPTH = (
+    MEASURED_DOOR_RECESS_DEPTH - DOOR_RECESS_DEPTH_TOLERANCE)
+DOOR_RECESS_MAX_DEPTH = (
+    MEASURED_DOOR_RECESS_DEPTH + DOOR_RECESS_DEPTH_TOLERANCE)
+MEASURED_DOOR_WIDTH = 1.71
+DOOR_WIDTH_TOLERANCE = 0.30
+DOOR_WIDTH_MIN = MEASURED_DOOR_WIDTH - DOOR_WIDTH_TOLERANCE
+DOOR_WIDTH_MAX = MEASURED_DOOR_WIDTH + DOOR_WIDTH_TOLERANCE
 DOOR_DETECTION_MIN_POINTS = 12
 DOOR_CENTER_REQUIRED_FRAMES = 5
 DOOR_CENTER_HISTORY_SIZE = 7
@@ -262,6 +271,7 @@ class DeliveryNavigator(object):
         self.door_center_width = None
         self.door_center_depth = None
         self.last_door_center_wall_time = None
+        self.last_door_approach_distance = None
         cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         self.status_pub = rospy.Publisher('/robot_status', String, queue_size=10)
         self.command_sub = rospy.Subscriber('/llm_command', String, self.command_callback)
@@ -1583,6 +1593,7 @@ class DeliveryNavigator(object):
 
     def drive_forward_to_door(self, room_name, maximum_distance):
         description = "approaching {}".format(console_text(room_name))
+        self.last_door_approach_distance = None
         self.client.cancel_all_goals()
         self.stop_robot()
         rospy.sleep(0.2)
@@ -1596,6 +1607,7 @@ class DeliveryNavigator(object):
 
         initial_front_distance = self.front_scan_distance
         if initial_front_distance <= LIDAR_DOOR_STOP_DISTANCE:
+            self.last_door_approach_distance = 0.0
             self.stop_robot()
             print(
                 "[navi] {} already at door clearance "
@@ -1672,6 +1684,7 @@ class DeliveryNavigator(object):
                             traveled,
                             max(0.0, front_distance -
                                 LIDAR_TO_FRONT_EDGE)))
+                    self.last_door_approach_distance = traveled
                     return True
                 rate.sleep()
                 continue
@@ -1706,11 +1719,32 @@ class DeliveryNavigator(object):
         return False
 
     def backup_for_next_destination(self):
-        return self.drive_straight_distance(
-            "backing up before next destination",
-            NEXT_GOAL_BACKUP_DISTANCE,
+        backup_distance = self.last_door_approach_distance
+        if backup_distance is None:
+            rospy.logwarn(
+                "No successful door-approach distance was recorded; "
+                "using the %.2f m legacy backup distance",
+                NEXT_GOAL_BACKUP_DISTANCE)
+            backup_distance = NEXT_GOAL_BACKUP_DISTANCE
+
+        if backup_distance <= 0.01:
+            print(
+                "[navi] no backup needed; the robot did not advance from "
+                "the corridor staging position")
+            self.last_door_approach_distance = None
+            return True
+
+        timeout = max(
+            NEXT_GOAL_BACKUP_TIMEOUT,
+            backup_distance / abs(NEXT_GOAL_BACKUP_SPEED) + 5.0)
+        success = self.drive_straight_distance(
+            "backing up by the recorded door approach distance",
+            backup_distance,
             -NEXT_GOAL_BACKUP_SPEED,
-            NEXT_GOAL_BACKUP_TIMEOUT)
+            timeout)
+        if success:
+            self.last_door_approach_distance = None
+        return success
 
     def prepare_for_next_destination(self, room_name):
         if not self.backup_for_next_destination():
