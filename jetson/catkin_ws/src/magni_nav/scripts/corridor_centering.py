@@ -23,13 +23,13 @@ class CorridorCentering(object):
         self.side_max_distance = rospy.get_param(
             '~side_max_distance', 2.30)
         self.corridor_min_width = rospy.get_param(
-            '~corridor_min_width', 1.60)
+            '~corridor_min_width', 2.20)
         self.corridor_max_width = rospy.get_param(
-            '~corridor_max_width', 2.40)
+            '~corridor_max_width', 2.50)
         self.expected_corridor_width = rospy.get_param(
-            '~expected_corridor_width', 2.00)
+            '~expected_corridor_width', 2.36)
         self.corridor_width_tolerance = rospy.get_param(
-            '~corridor_width_tolerance', 0.12)
+            '~corridor_width_tolerance', 0.10)
         self.acquisition_width_spread = rospy.get_param(
             '~acquisition_width_spread', 0.10)
         self.wall_flatness_tolerance = rospy.get_param(

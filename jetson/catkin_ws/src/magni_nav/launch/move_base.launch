@@ -26,10 +26,10 @@
     <param name="side_max_angle_deg" value="110.0" />
     <param name="side_min_distance" value="0.35" />
     <param name="side_max_distance" value="2.30" />
-    <param name="corridor_min_width" value="1.60" />
-    <param name="corridor_max_width" value="2.40" />
-    <param name="expected_corridor_width" value="2.00" />
-    <param name="corridor_width_tolerance" value="0.12" />
+    <param name="corridor_min_width" value="2.20" />
+    <param name="corridor_max_width" value="2.50" />
+    <param name="expected_corridor_width" value="2.36" />
+    <param name="corridor_width_tolerance" value="0.10" />
     <param name="acquisition_width_spread" value="0.10" />
     <param name="wall_flatness_tolerance" value="0.10" />
     <param name="normal_confirmation_samples" value="8" />
