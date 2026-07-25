@@ -53,6 +53,7 @@ locations = {
 }
 
 cmd_vel_pub = None
+cmd_vel_nav_pub = None
 corridor_reset_pub = None
 
 CENTER_XY_GOAL_TOLERANCE = 1.00
@@ -161,6 +162,14 @@ HOME_LOCATION_NAME = u"initial_home"
 HOME_POSITION_VERIFY_TOLERANCE = 0.25
 HOME_YAW_VERIFY_TOLERANCE = math.radians(4.0)
 HOME_ALIGNMENT_MAX_ATTEMPTS = 2
+HOME_CORRIDOR_SPEED = 0.08
+HOME_FINAL_APPROACH_SPEED = 0.04
+HOME_FINAL_APPROACH_DISTANCE = 1.00
+HOME_CORRIDOR_HEADING_KP = 0.60
+HOME_CORRIDOR_MAX_ANGULAR_SPEED = 0.05
+HOME_CORRIDOR_MAX_HEADING_ERROR = math.radians(20.0)
+HOME_CORRIDOR_PROGRESS_LOSS_LIMIT = 0.75
+HOME_CORRIDOR_TIMEOUT_MARGIN = 30.0
 HOME_TURN_DIRECTION_MIN_ANGLE = math.radians(150.0)
 HOME_LOCALIZATION_JUMP_DISTANCE = 1.50
 HOME_LOCALIZATION_JUMP_YAW = math.radians(45.0)
@@ -248,7 +257,7 @@ def normalize_angle(angle):
 
 class DeliveryNavigator(object):
     def __init__(self):
-        global cmd_vel_pub, corridor_reset_pub
+        global cmd_vel_pub, cmd_vel_nav_pub, corridor_reset_pub
         rospy.init_node('navi_cmd_node')
         self.odom_position = None
         self.odom_yaw = None
@@ -273,6 +282,8 @@ class DeliveryNavigator(object):
         self.last_door_center_wall_time = None
         self.last_door_approach_distance = None
         cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
+        cmd_vel_nav_pub = rospy.Publisher(
+            '/cmd_vel_nav', Twist, queue_size=10)
         corridor_reset_pub = rospy.Publisher(
             '/corridor_centering/reset', Empty, queue_size=1)
         self.status_pub = rospy.Publisher('/robot_status', String, queue_size=10)
@@ -332,6 +343,11 @@ class DeliveryNavigator(object):
 
     def stop_robot(self):
         twist = Twist()
+        cmd_vel_pub.publish(twist)
+
+    def stop_corridor_drive(self):
+        twist = Twist()
+        cmd_vel_nav_pub.publish(twist)
         cmd_vel_pub.publish(twist)
 
     def reset_corridor_direction_state(self):
@@ -1606,6 +1622,127 @@ class DeliveryNavigator(object):
         self.stop_robot()
         return False
 
+    def drive_corridor_to_home(self):
+        self.cancel_goal_if_active()
+        self.stop_corridor_drive()
+        rospy.sleep(0.2)
+
+        if not self.wait_for_fresh_odom(ODOM_WAIT_TIMEOUT):
+            rospy.logerr(
+                "Fresh /odom data is required for corridor-controlled return")
+            return False
+        if (not self.refresh_localization_from_tf() and
+                not self.wait_for_fresh_localization(AMCL_WAIT_TIMEOUT)):
+            rospy.logerr(
+                "Fresh map localization is required for "
+                "corridor-controlled return")
+            return False
+
+        start_distance = math.hypot(
+            self.home_pose[0] - self.amcl_position[0],
+            self.home_pose[1] - self.amcl_position[1])
+        best_distance = start_distance
+        timeout = (
+            start_distance / HOME_FINAL_APPROACH_SPEED +
+            HOME_CORRIDOR_TIMEOUT_MARGIN)
+        start_time = time.time()
+        last_progress_log = 0.0
+        rate = rospy.Rate(10)
+
+        print(
+            "[navi] returning to initial_home with corridor control "
+            "({:.3f} m)".format(start_distance))
+
+        while not rospy.is_shutdown():
+            if self.cancel_mission:
+                self.stop_corridor_drive()
+                return False
+
+            if self.paused:
+                pause_started = time.time()
+                self.stop_corridor_drive()
+                self.wait_while_paused()
+                start_time += time.time() - pause_started
+                continue
+
+            if (self.last_odom_wall_time is None or
+                    time.time() - self.last_odom_wall_time >
+                    ODOM_STALE_TIMEOUT):
+                rospy.logerr(
+                    "/odom stopped during corridor-controlled return")
+                self.stop_corridor_drive()
+                return False
+
+            if (self.last_amcl_wall_time is None or
+                    time.time() - self.last_amcl_wall_time >
+                    AMCL_STALE_TIMEOUT):
+                if not self.refresh_localization_from_tf(timeout=0.0):
+                    rospy.logerr(
+                        "Map localization stopped during "
+                        "corridor-controlled return")
+                    self.stop_corridor_drive()
+                    return False
+
+            current_x, current_y = self.amcl_position
+            delta_x = self.home_pose[0] - current_x
+            delta_y = self.home_pose[1] - current_y
+            distance = math.hypot(delta_x, delta_y)
+            best_distance = min(best_distance, distance)
+
+            if distance <= HOME_POSITION_VERIFY_TOLERANCE:
+                self.stop_corridor_drive()
+                print(
+                    "[navi] corridor-controlled return reached "
+                    "initial_home at {:.3f} m".format(distance))
+                return True
+
+            if distance > (
+                    best_distance + HOME_CORRIDOR_PROGRESS_LOSS_LIMIT):
+                rospy.logerr(
+                    "Corridor-controlled return moved away from home: "
+                    "%.3f m (best %.3f m)",
+                    distance,
+                    best_distance)
+                self.stop_corridor_drive()
+                return False
+
+            if time.time() - start_time > timeout:
+                rospy.logerr(
+                    "Corridor-controlled return timed out at %.3f m "
+                    "from home",
+                    distance)
+                self.stop_corridor_drive()
+                return False
+
+            target_yaw = math.atan2(delta_y, delta_x)
+            heading_error = normalize_angle(target_yaw - self.amcl_yaw)
+            command = Twist()
+            command.linear.x = (
+                HOME_FINAL_APPROACH_SPEED
+                if distance <= HOME_FINAL_APPROACH_DISTANCE
+                else HOME_CORRIDOR_SPEED)
+            if abs(heading_error) >= HOME_CORRIDOR_MAX_HEADING_ERROR:
+                command.linear.x = min(
+                    command.linear.x, HOME_FINAL_APPROACH_SPEED)
+            command.angular.z = max(
+                -HOME_CORRIDOR_MAX_ANGULAR_SPEED,
+                min(
+                    HOME_CORRIDOR_MAX_ANGULAR_SPEED,
+                    HOME_CORRIDOR_HEADING_KP * heading_error))
+            cmd_vel_nav_pub.publish(command)
+
+            now = time.time()
+            if now - last_progress_log >= GOAL_PROGRESS_LOG_INTERVAL:
+                print(
+                    "[navi] initial_home corridor return distance "
+                    "{:.3f} m heading error {:.1f} deg".format(
+                        distance, math.degrees(heading_error)))
+                last_progress_log = now
+            rate.sleep()
+
+        self.stop_corridor_drive()
+        return False
+
     def wait_for_fresh_front_scan(self, timeout):
         deadline = time.time() + timeout
         while not rospy.is_shutdown() and time.time() < deadline:
@@ -1924,19 +2061,10 @@ class DeliveryNavigator(object):
             "Home-return heading aligned; corridor centering will reacquire "
             "walls before passing the return command")
 
-        if not self.set_xy_goal_tolerance(HOME_POSITION_VERIFY_TOLERANCE):
+        if not self.drive_corridor_to_home():
+            rospy.logerr(
+                "Corridor-controlled return to the initial position failed")
             return False
-        try:
-            if not self.move_to_goal(
-                    HOME_LOCATION_NAME,
-                    self.home_pose,
-                    HOME_POSITION_VERIFY_TOLERANCE,
-                    localization_guard=True):
-                rospy.logerr(
-                    "Global-plan return to the initial position failed")
-                return False
-        finally:
-            self.set_xy_goal_tolerance(CENTER_XY_GOAL_TOLERANCE)
 
         if not self.refresh_localization_from_tf():
             rospy.logerr(
