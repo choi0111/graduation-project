@@ -289,7 +289,6 @@ class DeliveryNavigator(object):
         self.last_front_scan_wall_time = None
         self.front_scan_sequence = 0
         self.last_rear_scan_wall_time = None
-        self.last_scan_wall_time = None
         self.door_scan_lock = threading.Lock()
         self.door_center_history = []
         self.door_center_angle = None
@@ -570,7 +569,6 @@ class DeliveryNavigator(object):
             self.last_door_center_wall_time = time.time()
 
     def scan_callback(self, msg):
-        self.last_scan_wall_time = time.time()
         forward_distances = []
         rear_distances = []
         clearance_distances = []
@@ -632,9 +630,6 @@ class DeliveryNavigator(object):
                     rear_distances[rear_middle - 1] +
                     rear_distances[rear_middle]) * 0.5
             self.last_rear_scan_wall_time = time.time()
-        else:
-            self.rear_scan_distance = None
-            self.last_rear_scan_wall_time = None
 
         if not forward_distances or not clearance_distances:
             return
@@ -1667,20 +1662,13 @@ class DeliveryNavigator(object):
                 stop_motion()
                 return False
             if speed < 0.0:
-                if (self.last_scan_wall_time is None or
-                        time.time() - self.last_scan_wall_time >
+                if (self.last_rear_scan_wall_time is None or
+                        time.time() - self.last_rear_scan_wall_time >
                         FRONT_SCAN_STALE_TIMEOUT):
-                    rospy.logerr("/scan stopped during %s", description)
+                    rospy.logerr("Rear /scan stopped during %s", description)
                     stop_motion()
                     return False
-                rear_scan_is_fresh = (
-                    self.rear_scan_distance is not None and
-                    self.last_rear_scan_wall_time is not None and
-                    time.time() - self.last_rear_scan_wall_time <=
-                    FRONT_SCAN_STALE_TIMEOUT)
-                if (rear_scan_is_fresh and
-                        self.rear_scan_distance <=
-                        LIDAR_REAR_STOP_DISTANCE):
+                if self.rear_scan_distance <= LIDAR_REAR_STOP_DISTANCE:
                     rear_gap = max(
                         0.0,
                         self.rear_scan_distance - ROBOT_REAR_FROM_LIDAR)
@@ -1727,8 +1715,9 @@ class DeliveryNavigator(object):
         while not rospy.is_shutdown() and time.time() < deadline:
             if self.cancel_mission:
                 return False
-            if (self.last_scan_wall_time is not None and
-                    time.time() - self.last_scan_wall_time <=
+            if (self.rear_scan_distance is not None and
+                    self.last_rear_scan_wall_time is not None and
+                    time.time() - self.last_rear_scan_wall_time <=
                     FRONT_SCAN_STALE_TIMEOUT):
                 return True
             self.stop_robot()
