@@ -139,10 +139,14 @@ class CorridorCentering(object):
             self.left_wall_heading = None
             self.right_wall_heading = None
             self.current_corridor_width = None
+            self.normal_confirmation_count = 0
+            self.normal_width_samples = []
+            self.normal_corridor_seen = False
             self.wall_mode = 'none'
             self.last_scan_wall_time = None
         rospy.loginfo(
-            "corridor_centering: cleared direction-dependent wall state")
+            "corridor_centering: cleared direction-dependent wall state; "
+            "both walls must confirm the new corridor direction")
 
     @staticmethod
     def median(values):
