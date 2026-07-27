@@ -3,7 +3,7 @@ global_costmap:
   robot_base_frame: base_footprint
   update_frequency: 0.2
   publish_frequency: 0.2
-  transform_tolerance: 0.5
+  transform_tolerance: 0.8
 
   rolling_window: false
   resolution: 0.10

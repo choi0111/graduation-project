@@ -3,7 +3,7 @@ local_costmap:
   robot_base_frame: base_footprint
   update_frequency: 2.0
   publish_frequency: 1.0
-  transform_tolerance: 0.5
+  transform_tolerance: 0.8
 
   # Dynamic obstacle avoidance is disabled: there is no /scan obstacle layer.
   # The saved map is used in a rolling window so DWA still avoids mapped walls.
