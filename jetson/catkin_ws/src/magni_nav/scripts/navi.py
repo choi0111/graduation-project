@@ -181,6 +181,7 @@ HOME_FINAL_DRIVE_HEADING_ERROR = math.radians(8.0)
 HOME_CORRIDOR_HEADING_KP = 0.60
 HOME_CORRIDOR_MAX_ANGULAR_SPEED = 0.05
 HOME_CORRIDOR_MAX_HEADING_ERROR = math.radians(20.0)
+HOME_CORRIDOR_REALIGN_HEADING_ERROR = math.radians(12.0)
 HOME_CORRIDOR_PROGRESS_LOSS_LIMIT = 0.75
 HOME_CORRIDOR_TIMEOUT_MARGIN = 30.0
 HOME_TURN_DIRECTION_MIN_ANGLE = math.radians(150.0)
@@ -1727,7 +1728,8 @@ class DeliveryNavigator(object):
     def drive_corridor_to_home(self, target_pose=None,
                                target_name=HOME_LOCATION_NAME,
                                position_tolerance=
-                               HOME_POSITION_VERIFY_TOLERANCE):
+                               HOME_POSITION_VERIFY_TOLERANCE,
+                               corridor_yaw=None):
         self.cancel_goal_if_active()
         self.stop_corridor_drive()
         rospy.sleep(0.2)
@@ -1745,6 +1747,8 @@ class DeliveryNavigator(object):
                 "Fresh map localization is required for "
                 "corridor-controlled return")
             return False
+        if corridor_yaw is None:
+            corridor_yaw = self.amcl_yaw
 
         start_distance = math.hypot(
             target_pose[0] - self.amcl_position[0],
@@ -1827,8 +1831,32 @@ class DeliveryNavigator(object):
                 self.stop_corridor_drive()
                 return False
 
-            target_yaw = math.atan2(delta_y, delta_x)
-            heading_error = normalize_angle(target_yaw - self.amcl_yaw)
+            heading_error = normalize_angle(corridor_yaw - self.amcl_yaw)
+
+            if (not final_approach_started and
+                    abs(heading_error) >=
+                    HOME_CORRIDOR_REALIGN_HEADING_ERROR):
+                self.stop_corridor_drive()
+                realign_started = time.time()
+                rospy.logwarn(
+                    "Home-return corridor heading drifted %.1f deg; "
+                    "stopping to realign before continuing",
+                    math.degrees(heading_error))
+                if not self.rotate_to_map_yaw(
+                        target_name,
+                        corridor_yaw,
+                        "realigning with the home-return corridor",
+                        NEXT_GOAL_MIN_ANGULAR_SPEED,
+                        NEXT_GOAL_MAX_ANGULAR_SPEED,
+                        NEXT_GOAL_ALIGN_TIMEOUT):
+                    rospy.logerr(
+                        "Failed to restore the home-return corridor heading")
+                    return False
+                start_time += time.time() - realign_started
+                self.stop_robot()
+                self.reset_corridor_direction_state()
+                rospy.sleep(0.2)
+                continue
 
             if (not final_approach_started and
                     distance <= HOME_FINAL_APPROACH_DISTANCE):
@@ -2186,7 +2214,15 @@ class DeliveryNavigator(object):
         # lets scans from the old travel direction repopulate the left/right
         # wall state and can invert the first centering correction after a
         # 180-degree homeward turn.
-        if not self.align_toward_destination(HOME_LOCATION_NAME):
+        home_return_corridor_yaw = normalize_angle(
+            self.home_yaw + math.pi)
+        if not self.rotate_to_map_yaw(
+                HOME_LOCATION_NAME,
+                home_return_corridor_yaw,
+                "turning into the home-return corridor",
+                NEXT_GOAL_MIN_ANGULAR_SPEED,
+                NEXT_GOAL_MAX_ANGULAR_SPEED,
+                NEXT_GOAL_ALIGN_TIMEOUT):
             rospy.logerr(
                 "Failed to align toward the initial position before return")
             return False
@@ -2199,7 +2235,8 @@ class DeliveryNavigator(object):
         if not self.drive_corridor_to_home(
                 self.home_pose,
                 HOME_LOCATION_NAME,
-                HOME_NEARBY_STOP_DISTANCE):
+                HOME_NEARBY_STOP_DISTANCE,
+                home_return_corridor_yaw):
             rospy.logerr(
                 "Corridor-controlled return near the initial position failed")
             return False
