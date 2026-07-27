@@ -175,10 +175,8 @@ HOME_ALIGNMENT_MAX_ATTEMPTS = 2
 HOME_CORRIDOR_SPEED = 0.08
 HOME_FINAL_APPROACH_SPEED = 0.04
 HOME_FINAL_APPROACH_DISTANCE = 1.50
-HOME_NEARBY_STOP_DISTANCE = 1.60
-HOME_NEARBY_VERIFY_TOLERANCE = 1.60
-HOME_Y_STOP_TOLERANCE = 0.35
-HOME_Y_STOP_MAX_DISTANCE = 2.50
+HOME_NEARBY_STOP_DISTANCE = 1.90
+HOME_NEARBY_VERIFY_TOLERANCE = 2.00
 HOME_FINAL_DRIVE_HEADING_ERROR = math.radians(8.0)
 HOME_CORRIDOR_HEADING_KP = 0.60
 HOME_CORRIDOR_MAX_ANGULAR_SPEED = 0.05
@@ -1751,7 +1749,6 @@ class DeliveryNavigator(object):
         start_distance = math.hypot(
             target_pose[0] - self.amcl_position[0],
             target_pose[1] - self.amcl_position[1])
-        start_home_y_delta = target_pose[1] - self.amcl_position[1]
         best_distance = start_distance
         timeout = (
             start_distance / HOME_FINAL_APPROACH_SPEED +
@@ -1801,20 +1798,6 @@ class DeliveryNavigator(object):
             delta_y = target_pose[1] - current_y
             distance = math.hypot(delta_x, delta_y)
             best_distance = min(best_distance, distance)
-
-            home_y_reached = (
-                target_name == HOME_LOCATION_NAME and
-                distance <= HOME_Y_STOP_MAX_DISTANCE and
-                (abs(delta_y) <= HOME_Y_STOP_TOLERANCE or
-                 start_home_y_delta * delta_y <= 0.0))
-            if home_y_reached:
-                self.stop_corridor_drive()
-                print(
-                    "[navi] initial_home y gate reached: "
-                    "y error {:.3f} m, position error {:.3f} m; "
-                    "stopping translation for final heading alignment".format(
-                        abs(delta_y), distance))
-                return True
 
             if distance <= position_tolerance:
                 self.stop_corridor_drive()
@@ -2228,25 +2211,18 @@ class DeliveryNavigator(object):
         home_position_error = math.hypot(
             self.amcl_position[0] - self.home_pose[0],
             self.amcl_position[1] - self.home_pose[1])
-        home_y_error = abs(
-            self.amcl_position[1] - self.home_pose[1])
-        home_position_accepted = (
-            home_position_error <= HOME_NEARBY_VERIFY_TOLERANCE or
-            (home_y_error <= HOME_Y_STOP_TOLERANCE and
-             home_position_error <= HOME_Y_STOP_MAX_DISTANCE))
-        if not home_position_accepted:
+        if home_position_error > HOME_NEARBY_VERIFY_TOLERANCE:
             rospy.logerr(
                 "Initial-position proximity verification failed: "
-                "%.3f m from home, y error %.3f m",
+                "%.3f m from home "
+                "(limit %.3f m)",
                 home_position_error,
-                home_y_error)
+                HOME_NEARBY_VERIFY_TOLERANCE)
             return False
         rospy.loginfo(
-            "Initial-position proximity verified at %.3f m "
-            "(y error %.3f m); "
+            "Initial-position proximity verified at %.3f m; "
             "only heading alignment remains",
-            home_position_error,
-            home_y_error)
+            home_position_error)
 
         home_alignment_ok = False
         for _attempt in range(HOME_ALIGNMENT_MAX_ATTEMPTS):
@@ -2294,30 +2270,21 @@ class DeliveryNavigator(object):
         final_home_position_error = math.hypot(
             self.amcl_position[0] - self.home_pose[0],
             self.amcl_position[1] - self.home_pose[1])
-        final_home_y_error = abs(
-            self.amcl_position[1] - self.home_pose[1])
         final_home_yaw_error = abs(normalize_angle(
             self.home_yaw - self.amcl_yaw))
-        final_home_position_accepted = (
-            final_home_position_error <= HOME_NEARBY_VERIFY_TOLERANCE or
-            (final_home_y_error <= HOME_Y_STOP_TOLERANCE and
-             final_home_position_error <= HOME_Y_STOP_MAX_DISTANCE))
-        if (not final_home_position_accepted or
+        if (final_home_position_error > HOME_NEARBY_VERIFY_TOLERANCE or
                 final_home_yaw_error > HOME_YAW_VERIFY_TOLERANCE):
             rospy.logerr(
-                "Final near-home verification failed: %.3f m, "
-                "y error %.3f m, %.1f deg",
+                "Final near-home verification failed: %.3f m, %.1f deg",
                 final_home_position_error,
-                final_home_y_error,
                 math.degrees(final_home_yaw_error))
             return False
 
         self.stop_corridor_drive()
         rospy.loginfo(
-            "[RETURNED] 초기 위치 y좌표 근처 정지 완료: "
-            "position %.3f m, y error %.3f m, yaw %.1f deg",
+            "[RETURNED] 초기 위치 근처 정지 완료: position %.3f m, "
+            "yaw %.1f deg",
             final_home_position_error,
-            final_home_y_error,
             math.degrees(final_home_yaw_error))
         return True
 
