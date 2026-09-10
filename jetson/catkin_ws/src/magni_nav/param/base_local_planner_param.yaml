@@ -2,7 +2,7 @@ DWAPlannerROS:
   # Keep planner limits close to the STM32 motor controller limits.
   # Use a moderate corridor cruise speed. Final room alignment and the short
   # fixed-distance approach are controlled separately at lower speeds.
-  max_vel_x: 0.135
+  max_vel_x: 0.16
   # Include zero so DWA can build a valid dynamic window from rest.  With the
   # 3 Hz controller and the old 0.04 m/s^2 limit, the first reachable speed
   # was below the old 0.02 m/s minimum, so straight trajectories were rejected
@@ -12,7 +12,7 @@ DWAPlannerROS:
   max_vel_y: 0.0
   min_vel_y: 0.0
 
-  max_vel_trans: 0.135
+  max_vel_trans: 0.16
   # Reject effectively stationary trajectories. With both minimum translation
   # and rotation set to zero, DWA could select a floating-point near-zero
   # angular command forever while an active goal remained several metres away.
