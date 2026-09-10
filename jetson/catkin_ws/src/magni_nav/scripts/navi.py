@@ -177,6 +177,10 @@ HOME_FINAL_APPROACH_SPEED = 0.04
 HOME_FINAL_APPROACH_DISTANCE = 1.50
 HOME_NEARBY_STOP_DISTANCE = 1.90
 HOME_NEARBY_VERIFY_TOLERANCE = 2.00
+HOME_LONGITUDINAL_TOLERANCE = 0.15
+HOME_LONGITUDINAL_VERIFY_TOLERANCE = 0.25
+HOME_LONGITUDINAL_MAX_ADJUST = 1.20
+HOME_LONGITUDINAL_ADJUST_SPEED = 0.04
 HOME_FINAL_DRIVE_HEADING_ERROR = math.radians(8.0)
 HOME_CORRIDOR_HEADING_KP = 0.60
 HOME_CORRIDOR_MAX_ANGULAR_SPEED = 0.05
@@ -1903,6 +1907,69 @@ class DeliveryNavigator(object):
         self.stop_corridor_drive()
         return False
 
+    def adjust_home_longitudinal_position(self):
+        if not self.refresh_localization_from_tf():
+            rospy.logerr(
+                "Cannot verify the robot pose before home longitudinal "
+                "adjustment")
+            return False
+
+        forward_x = math.cos(self.home_yaw)
+        forward_y = math.sin(self.home_yaw)
+        error = (
+            (self.home_pose[0] - self.amcl_position[0]) * forward_x +
+            (self.home_pose[1] - self.amcl_position[1]) * forward_y)
+
+        if abs(error) <= HOME_LONGITUDINAL_TOLERANCE:
+            rospy.loginfo(
+                "Home longitudinal position already within %.3f m "
+                "(error %.3f m)",
+                HOME_LONGITUDINAL_TOLERANCE,
+                error)
+            return True
+
+        distance = min(abs(error), HOME_LONGITUDINAL_MAX_ADJUST)
+        speed = (
+            HOME_LONGITUDINAL_ADJUST_SPEED
+            if error > 0.0 else -HOME_LONGITUDINAL_ADJUST_SPEED)
+        direction_text = "forward" if speed > 0.0 else "backward"
+        rospy.loginfo(
+            "Adjusting home longitudinal position %s by %.3f m "
+            "(axis error %.3f m)",
+            direction_text,
+            distance,
+            error)
+
+        timeout = distance / HOME_LONGITUDINAL_ADJUST_SPEED + 8.0
+        if not self.drive_straight_distance(
+                "adjusting home longitudinal position",
+                distance,
+                speed,
+                timeout,
+                rear_guard_completes_motion=(speed < 0.0)):
+            return False
+
+        if not self.refresh_localization_from_tf():
+            rospy.logerr(
+                "Cannot verify the robot pose after home longitudinal "
+                "adjustment")
+            return False
+
+        remaining_error = (
+            (self.home_pose[0] - self.amcl_position[0]) * forward_x +
+            (self.home_pose[1] - self.amcl_position[1]) * forward_y)
+        if abs(remaining_error) > HOME_LONGITUDINAL_VERIFY_TOLERANCE:
+            rospy.logerr(
+                "Home longitudinal adjustment ended too far from the "
+                "initial axis: %.3f m",
+                remaining_error)
+            return False
+        rospy.loginfo(
+            "Home longitudinal adjustment complete: remaining axis error "
+            "%.3f m",
+            remaining_error)
+        return True
+
     def wait_for_fresh_front_scan(self, timeout):
         deadline = time.time() + timeout
         while not rospy.is_shutdown() and time.time() < deadline:
@@ -2299,6 +2366,28 @@ class DeliveryNavigator(object):
                 HOME_ALIGNMENT_MAX_ATTEMPTS)
             return False
 
+        if not self.adjust_home_longitudinal_position():
+            rospy.logerr(
+                "Failed to adjust the initial-position longitudinal axis")
+            return False
+
+        if not self.refresh_localization_from_tf():
+            rospy.logerr(
+                "Cannot verify the robot heading after longitudinal "
+                "adjustment")
+            return False
+        home_yaw_error = normalize_angle(self.home_yaw - self.amcl_yaw)
+        if abs(home_yaw_error) > HOME_YAW_VERIFY_TOLERANCE:
+            if not self.rotate_to_map_yaw(
+                    HOME_LOCATION_NAME,
+                    self.home_yaw,
+                    "realigning after home longitudinal adjustment",
+                    NEXT_GOAL_MIN_ANGULAR_SPEED,
+                    NEXT_GOAL_MAX_ANGULAR_SPEED,
+                    NEXT_GOAL_ALIGN_TIMEOUT,
+                    self.preferred_home_turn_direction()):
+                return False
+
         self.stop_corridor_drive()
         rospy.sleep(0.2)
         if not self.refresh_localization_from_tf():
@@ -2309,19 +2398,29 @@ class DeliveryNavigator(object):
             self.amcl_position[1] - self.home_pose[1])
         final_home_yaw_error = abs(normalize_angle(
             self.home_yaw - self.amcl_yaw))
+        forward_x = math.cos(self.home_yaw)
+        forward_y = math.sin(self.home_yaw)
+        final_home_longitudinal_error = abs(
+            (self.home_pose[0] - self.amcl_position[0]) * forward_x +
+            (self.home_pose[1] - self.amcl_position[1]) * forward_y)
         if (final_home_position_error > HOME_NEARBY_VERIFY_TOLERANCE or
+                final_home_longitudinal_error >
+                HOME_LONGITUDINAL_VERIFY_TOLERANCE or
                 final_home_yaw_error > HOME_YAW_VERIFY_TOLERANCE):
             rospy.logerr(
-                "Final near-home verification failed: %.3f m, %.1f deg",
+                "Final near-home verification failed: %.3f m, "
+                "axis %.3f m, %.1f deg",
                 final_home_position_error,
+                final_home_longitudinal_error,
                 math.degrees(final_home_yaw_error))
             return False
 
         self.stop_corridor_drive()
         rospy.loginfo(
             "[RETURNED] 초기 위치 근처 정지 완료: position %.3f m, "
-            "yaw %.1f deg",
+            "axis %.3f m, yaw %.1f deg",
             final_home_position_error,
+            final_home_longitudinal_error,
             math.degrees(final_home_yaw_error))
         return True
 
