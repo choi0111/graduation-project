@@ -126,9 +126,11 @@ next destination, it reverses 0.50 m using `/odom`, rotates in place toward the
 next destination's corridor-center pose, and only then starts `move_base`.
 After the last CLI or LLM destination, it backs away from the room and returns
 near the stored `initial_home` pose. The return follows the corridor center,
-turns to match the original home heading, then adjusts only the home-axis
-position within 0.25 m at low speed. Lateral error is allowed as long as the
-robot stays near the starting area. When a room has a stored `_중앙` pose,
+turns in place to match the original home heading, then adjusts only the
+home-axis position within 0.25 m at low speed. It verifies the heading over
+multiple consecutive TF samples before and after this forward/reverse
+adjustment. Lateral error is allowed as long as the robot stays near the
+starting area. When a room has a stored `_중앙` pose,
 navigation uses it to align with the room before the final lidar-controlled
 approach:
 

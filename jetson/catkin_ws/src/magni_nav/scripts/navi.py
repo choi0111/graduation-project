@@ -171,7 +171,9 @@ ITEM_PROMPT_TTS_WAIT_TIMEOUT = 30.0
 HOME_LOCATION_NAME = u"initial_home"
 HOME_POSITION_VERIFY_TOLERANCE = 0.25
 HOME_YAW_VERIFY_TOLERANCE = math.radians(4.0)
-HOME_ALIGNMENT_MAX_ATTEMPTS = 2
+HOME_ALIGNMENT_MAX_ATTEMPTS = 3
+HOME_HEADING_STABLE_SAMPLES = 8
+HOME_HEADING_STABLE_TIMEOUT = 2.0
 HOME_CORRIDOR_SPEED = 0.10
 HOME_FINAL_APPROACH_SPEED = 0.04
 HOME_FINAL_APPROACH_DISTANCE = 1.50
@@ -1970,6 +1972,82 @@ class DeliveryNavigator(object):
             remaining_error)
         return True
 
+    def home_heading_is_stable(self):
+        deadline = time.time() + HOME_HEADING_STABLE_TIMEOUT
+        stable_samples = 0
+        rate = rospy.Rate(20)
+
+        while not rospy.is_shutdown() and time.time() < deadline:
+            if self.cancel_mission:
+                return False
+
+            map_pose = self.lookup_map_pose()
+            if map_pose is None:
+                stable_samples = 0
+                self.stop_robot()
+                rate.sleep()
+                continue
+
+            self.amcl_position = map_pose[0]
+            self.amcl_yaw = map_pose[1]
+            yaw_error = abs(normalize_angle(
+                self.home_yaw - self.amcl_yaw))
+            if yaw_error > HOME_YAW_VERIFY_TOLERANCE:
+                return False
+
+            stable_samples += 1
+            self.stop_robot()
+            if stable_samples >= HOME_HEADING_STABLE_SAMPLES:
+                rospy.loginfo(
+                    "Initial heading stable at %.1f deg error for %d "
+                    "samples",
+                    math.degrees(yaw_error),
+                    stable_samples)
+                return True
+            rate.sleep()
+
+        return False
+
+    def align_home_heading(self, action_text):
+        for attempt in range(HOME_ALIGNMENT_MAX_ATTEMPTS):
+            if not self.refresh_localization_from_tf():
+                rospy.logerr(
+                    "Cannot verify the robot heading at the initial "
+                    "position")
+                return False
+
+            home_yaw_error = normalize_angle(
+                self.home_yaw - self.amcl_yaw)
+            if abs(home_yaw_error) > HOME_YAW_VERIFY_TOLERANCE:
+                preferred_direction = (
+                    self.preferred_home_turn_direction()
+                    if attempt == 0 else None)
+                if not self.rotate_to_map_yaw(
+                        HOME_LOCATION_NAME,
+                        self.home_yaw,
+                        action_text,
+                        NEXT_GOAL_MIN_ANGULAR_SPEED,
+                        NEXT_GOAL_MAX_ANGULAR_SPEED,
+                        NEXT_GOAL_ALIGN_TIMEOUT,
+                        preferred_direction):
+                    return False
+                self.stop_robot()
+                rospy.sleep(0.5)
+
+            if self.home_heading_is_stable():
+                return True
+
+            rospy.logwarn(
+                "Initial heading verification changed after attempt %d; "
+                "realigning",
+                attempt + 1)
+
+        rospy.logerr(
+            "Initial heading did not remain within tolerance for %d "
+            "attempts",
+            HOME_ALIGNMENT_MAX_ATTEMPTS)
+        return False
+
     def wait_for_fresh_front_scan(self, timeout):
         deadline = time.time() + timeout
         while not rospy.is_shutdown() and time.time() < deadline:
@@ -2328,42 +2406,8 @@ class DeliveryNavigator(object):
             "only heading alignment remains",
             home_position_error)
 
-        home_alignment_ok = False
-        for _attempt in range(HOME_ALIGNMENT_MAX_ATTEMPTS):
-            if not self.refresh_localization_from_tf():
-                rospy.logerr(
-                    "Cannot verify the robot heading at the initial position")
-                return False
-            home_yaw_error = normalize_angle(
-                self.home_yaw - self.amcl_yaw)
-            if abs(home_yaw_error) <= HOME_YAW_VERIFY_TOLERANCE:
-                home_alignment_ok = True
-                break
-            if not self.rotate_to_map_yaw(
-                    HOME_LOCATION_NAME,
-                    self.home_yaw,
-                    "aligning near initial position",
-                    NEXT_GOAL_MIN_ANGULAR_SPEED,
-                    NEXT_GOAL_MAX_ANGULAR_SPEED,
-                    NEXT_GOAL_ALIGN_TIMEOUT,
-                    self.preferred_home_turn_direction()):
-                return False
-            self.stop_robot()
-            rospy.sleep(0.5)
-
-        if not home_alignment_ok:
-            if not self.refresh_localization_from_tf():
-                rospy.logerr(
-                    "Cannot verify the robot heading after final alignment")
-                return False
-            home_yaw_error = normalize_angle(
-                self.home_yaw - self.amcl_yaw)
-            home_alignment_ok = (
-                abs(home_yaw_error) <= HOME_YAW_VERIFY_TOLERANCE)
-        if not home_alignment_ok:
-            rospy.logerr(
-                "Initial heading did not converge within %d attempts",
-                HOME_ALIGNMENT_MAX_ATTEMPTS)
+        if not self.align_home_heading(
+                "turning 180 degrees to the initial heading"):
             return False
 
         if not self.adjust_home_longitudinal_position():
@@ -2371,22 +2415,9 @@ class DeliveryNavigator(object):
                 "Failed to adjust the initial-position longitudinal axis")
             return False
 
-        if not self.refresh_localization_from_tf():
-            rospy.logerr(
-                "Cannot verify the robot heading after longitudinal "
-                "adjustment")
+        if not self.align_home_heading(
+                "realigning after home longitudinal adjustment"):
             return False
-        home_yaw_error = normalize_angle(self.home_yaw - self.amcl_yaw)
-        if abs(home_yaw_error) > HOME_YAW_VERIFY_TOLERANCE:
-            if not self.rotate_to_map_yaw(
-                    HOME_LOCATION_NAME,
-                    self.home_yaw,
-                    "realigning after home longitudinal adjustment",
-                    NEXT_GOAL_MIN_ANGULAR_SPEED,
-                    NEXT_GOAL_MAX_ANGULAR_SPEED,
-                    NEXT_GOAL_ALIGN_TIMEOUT,
-                    self.preferred_home_turn_direction()):
-                return False
 
         self.stop_corridor_drive()
         rospy.sleep(0.2)
