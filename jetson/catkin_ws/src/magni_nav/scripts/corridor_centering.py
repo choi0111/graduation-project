@@ -407,13 +407,16 @@ class CorridorCentering(object):
                         return
 
                 single_side_candidates = []
-                if ((left is None) != (right is None)):
-                    if left is not None and left_flat:
-                        single_side_candidates.append(
-                            ('left', abs(left - target_side_distance)))
-                    if right is not None and right_flat:
-                        single_side_candidates.append(
-                            ('right', abs(right - target_side_distance)))
+                # A recessed doorway can leave both surfaces visible while only
+                # one is the continuous corridor wall.  After a heading reset,
+                # consider every flat side and select the unambiguous wall that
+                # is closest to the nominal corridor-center distance.
+                if left is not None and left_flat:
+                    single_side_candidates.append(
+                        ('left', abs(left - target_side_distance)))
+                if right is not None and right_flat:
+                    single_side_candidates.append(
+                        ('right', abs(right - target_side_distance)))
                 single_side_candidates.sort(key=lambda item: item[1])
                 if (single_side_candidates and
                         single_side_candidates[0][1] <=
@@ -430,10 +433,12 @@ class CorridorCentering(object):
                     self.wall_mode = intact_side
                     rospy.loginfo(
                         "corridor_centering reacquired %s wall after reset: "
-                        "distance %.3f target %.3f",
+                        "left %s right %s target %.3f score %.3f",
                         intact_side,
-                        left if intact_side == 'left' else right,
-                        target_side_distance)
+                        "%.3f" % left if left is not None else "open",
+                        "%.3f" % right if right is not None else "open",
+                        target_side_distance,
+                        single_side_candidates[0][1])
                     return
 
             wall_candidates = []
