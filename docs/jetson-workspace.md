@@ -187,15 +187,15 @@ roslaunch magni_nav jetson_autodrive.launch
 
 ## Coordinated speed limits
 
-The Jetson cruise speeds have been restored; the STM ceiling remains 0.20 m/s.
+The Jetson cruise speeds are 0.135 m/s; the STM ceiling remains 0.20 m/s.
 For firmware updates, use `stm/main.cpp` as `Core/Src/main.cpp` in STM32CubeIDE.
 Build and upload the firmware; a build
 alone does not update the board. The attached encoder-test `main.c` is not
 the ROS motor-control application and must remain excluded from this build.
 
 - STM linear-command and wheel-target ceiling: 0.20 m/s.
-- Outbound DWA cruise ceiling: 0.09 m/s (restored after the faster-speed trial).
-- Home-return corridor cruise: 0.08 m/s (restored after the faster-speed trial).
+- Outbound DWA cruise ceiling: 0.135 m/s (originally 0.09).
+- Home-return corridor cruise: 0.135 m/s, matching outbound cruise (originally 0.08).
 - Door approach, reverse, rotation and centering slowdown settings are unchanged.
 
 The STM PWM reference remains 0.10 m/s to preserve the existing low-speed
