@@ -185,6 +185,25 @@ source devel/setup.bash
 roslaunch magni_nav jetson_autodrive.launch
 ```
 
+## Coordinated speed limits
+
+Flash `stm/main.cpp` as `Core/Src/main.cpp` in STM32CubeIDE before testing
+the increased Jetson cruise limits. Build and upload the firmware; a build
+alone does not update the board. The attached encoder-test `main.c` is not
+the ROS motor-control application and must remain excluded from this build.
+
+- STM linear-command and wheel-target ceiling: 0.20 m/s.
+- Outbound DWA cruise ceiling: 0.135 m/s (previously 0.09).
+- Home-return corridor cruise: 0.12 m/s (previously 0.08).
+- Door approach, reverse, rotation and centering slowdown settings are unchanged.
+
+The STM PWM reference remains 0.10 m/s to preserve the existing low-speed
+mapping. Forward/reverse PWM caps remain 50/30 percent. Raising the command
+ceiling does not double available motor output: above the reference speed,
+the feedforward PWM saturates at its existing cap. Verify actual encoder-based
+speed, centering and stopping before relying on the higher cruise settings.
+Do not raise the PWM caps without measuring loaded motor behavior.
+
 ## Encoder calibration
 
 The encoder-motor configuration uses the measured wheel-output counts below:

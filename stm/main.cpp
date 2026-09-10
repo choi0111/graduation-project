@@ -46,7 +46,10 @@ UART_HandleTypeDef huart2;
  * 예전 엔코더 모터 기준의 주행 속도는 유지하고,
  * 새 PM52 모터는 같은 속도를 내기 위해 PWM만 약 2배로 올림.
  */
-#define MAX_LINEAR_X_MPS      0.10f
+#define MAX_LINEAR_X_MPS      0.20f
+
+// Keep the calibrated low-speed PWM mapping independent of the speed limit.
+#define PWM_REFERENCE_SPEED_MPS 0.10f
 #define MAX_ANGULAR_Z_RADPS   0.20f
 
 #define PWM_MAX_CCR           49
@@ -359,7 +362,7 @@ static int speed_to_signed_pwm(float target_mps)
   }
 
   int pwm_abs = PWM_MIN_MOVE
-              + (int)((speed_abs / MAX_LINEAR_X_MPS)
+              + (int)((speed_abs / PWM_REFERENCE_SPEED_MPS)
               * (float)(limit - PWM_MIN_MOVE));
 
   pwm_abs = clamp_int(pwm_abs, PWM_MIN_MOVE, limit);
@@ -783,7 +786,7 @@ int main(void)
   nh.advertise(ticks_pub);
   nh.subscribe(cmd_sub);
 
-  nh.loginfo("STM32 ROS Motor Control Ready - PM52 PWM50 REV30 TURN25");
+  nh.loginfo("STM32 ROS Motor Control Ready - PM52 LIMIT0.20 REF0.10 BASE0.725");
 
   uint32_t last_control_time = HAL_GetTick();
 
