@@ -138,6 +138,11 @@ approach:
 rosrun magni_nav navi.py "544호" "540호" "542호"
 ```
 
+The tested 542, 544, and 545 staging lines all accept up to 0.65 m of
+cross-track error. This keeps the same center-arrival behavior when a room is
+approached from either corridor direction; rotation clearance and lidar door
+clearance checks still run before the final approach.
+
 The original Magni destination database remains unchanged. The large platform
 navigates to the stored corridor-center pose, rotates toward the stored room
 coordinate, and approaches at low speed until the front laser is 0.41 m from
