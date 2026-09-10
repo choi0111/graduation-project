@@ -8,7 +8,7 @@ import time
 import rospy
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Empty
+from std_msgs.msg import Bool, Empty
 
 
 class CorridorCentering(object):
@@ -71,6 +71,8 @@ class CorridorCentering(object):
             '~centering_deadband', 0.04)
         self.maximum_correction = rospy.get_param(
             '~maximum_correction', 0.06)
+        self.return_maximum_centering_correction = rospy.get_param(
+            '~return_maximum_centering_correction', 0.025)
         self.centering_slow_error = rospy.get_param(
             '~centering_slow_error', 0.12)
         self.centering_slow_heading = math.radians(rospy.get_param(
@@ -110,6 +112,7 @@ class CorridorCentering(object):
         self.normal_width_samples = []
         self.normal_corridor_seen = False
         self.wall_mode = 'none'
+        self.return_mode = False
         self.last_scan_wall_time = None
 
         self.cmd_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
@@ -120,6 +123,9 @@ class CorridorCentering(object):
         self.reset_sub = rospy.Subscriber(
             '/corridor_centering/reset', Empty, self.reset_callback,
             queue_size=1)
+        self.return_mode_sub = rospy.Subscriber(
+            '/corridor_centering/return_mode', Bool,
+            self.return_mode_callback, queue_size=1)
 
         rospy.loginfo(
             "corridor_centering: side sectors %.0f..%.0f deg, "
@@ -129,6 +135,13 @@ class CorridorCentering(object):
             self.corridor_min_width,
             self.corridor_max_width,
             self.centering_gain)
+
+    def return_mode_callback(self, msg):
+        with self.lock:
+            self.return_mode = bool(msg.data)
+        rospy.loginfo(
+            "corridor_centering: return mode %s",
+            "enabled" if msg.data else "disabled")
 
     def reset_callback(self, _msg):
         with self.lock:
@@ -493,6 +506,7 @@ class CorridorCentering(object):
             current_width = self.current_corridor_width
             nominal_width = self.nominal_corridor_width
             wall_mode = self.wall_mode
+            return_mode = self.return_mode
             normal_corridor_seen = self.normal_corridor_seen
             confirmation_count = self.normal_confirmation_count
             scan_time = self.last_scan_wall_time
@@ -583,10 +597,29 @@ class CorridorCentering(object):
                 heading_correction = (
                     self.heading_gain * effective_heading)
 
-            correction = self.clamp(
-                lateral_correction + heading_correction,
-                -self.maximum_output_angular_speed,
-                self.maximum_output_angular_speed)
+            if return_mode:
+                # The map-frame home heading is the primary return controller.
+                # Lidar centering only supplies a small lateral trim so it
+                # cannot overwrite that heading and create a turn/realign loop.
+                centering_trim = self.clamp(
+                    lateral_correction,
+                    -self.return_maximum_centering_correction,
+                    self.return_maximum_centering_correction)
+                path_correction = self.clamp(
+                    msg.angular.z,
+                    -self.maximum_output_angular_speed,
+                    self.maximum_output_angular_speed)
+                correction = self.clamp(
+                    path_correction + centering_trim,
+                    -self.maximum_output_angular_speed,
+                    self.maximum_output_angular_speed)
+            else:
+                centering_trim = lateral_correction + heading_correction
+                path_correction = 0.0
+                correction = self.clamp(
+                    centering_trim,
+                    -self.maximum_output_angular_speed,
+                    self.maximum_output_angular_speed)
             command.angular.z = self.clamp(
                 correction,
                 -self.maximum_output_angular_speed,
@@ -607,10 +640,11 @@ class CorridorCentering(object):
                 right_text = "%.3f" % right
             rospy.loginfo_throttle(
                 2.0,
-                "corridor_centering active (%s): left %s right %s "
+                "corridor_centering active (%s,%s): left %s right %s "
                 "width %s target %.3f error %.3f heading %s "
-                "lateral %.3f angular %.3f output %.3f speed %.3f",
+                "path %.3f lateral %.3f angular %.3f output %.3f speed %.3f",
                 wall_mode,
+                "return" if return_mode else "navigation",
                 left_text,
                 right_text,
                 ("%.3f" % current_width
@@ -619,6 +653,7 @@ class CorridorCentering(object):
                 center_error,
                 ("%.1fdeg" % math.degrees(wall_heading)
                  if wall_heading is not None else "unknown"),
+                path_correction,
                 lateral_correction,
                 heading_correction,
                 correction,

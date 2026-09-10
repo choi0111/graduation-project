@@ -15,7 +15,7 @@ from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Empty, String
+from std_msgs.msg import Bool, Empty, String
 
 # =========================================================
 # 1. [완벽 복구된 좌표 데이터베이스]
@@ -55,6 +55,7 @@ locations = {
 cmd_vel_pub = None
 cmd_vel_nav_pub = None
 corridor_reset_pub = None
+corridor_return_mode_pub = None
 
 CENTER_XY_GOAL_TOLERANCE = 1.00
 FINAL_XY_GOAL_TOLERANCE = 0.15
@@ -282,6 +283,7 @@ def normalize_angle(angle):
 class DeliveryNavigator(object):
     def __init__(self):
         global cmd_vel_pub, cmd_vel_nav_pub, corridor_reset_pub
+        global corridor_return_mode_pub
         rospy.init_node('navi_cmd_node')
         self.odom_position = None
         self.odom_yaw = None
@@ -312,6 +314,10 @@ class DeliveryNavigator(object):
             '/cmd_vel_nav', Twist, queue_size=10)
         corridor_reset_pub = rospy.Publisher(
             '/corridor_centering/reset', Empty, queue_size=1)
+        corridor_return_mode_pub = rospy.Publisher(
+            '/corridor_centering/return_mode', Bool,
+            queue_size=1, latch=True)
+        corridor_return_mode_pub.publish(Bool(data=False))
         self.status_pub = rospy.Publisher('/robot_status', String, queue_size=10)
         self.command_sub = rospy.Subscriber('/llm_command', String, self.command_callback)
         self.tts_event_sub = rospy.Subscriber(
@@ -375,6 +381,9 @@ class DeliveryNavigator(object):
         twist = Twist()
         cmd_vel_nav_pub.publish(twist)
         cmd_vel_pub.publish(twist)
+
+    def set_corridor_return_mode(self, enabled):
+        corridor_return_mode_pub.publish(Bool(data=bool(enabled)))
 
     def reset_corridor_direction_state(self):
         reset_message = Empty()
@@ -675,6 +684,7 @@ class DeliveryNavigator(object):
         self.cancel_mission = True
         self.paused = False
         self.cancel_pending_resume()
+        self.set_corridor_return_mode(False)
 
         try:
             self.client.cancel_all_goals()
@@ -2434,11 +2444,17 @@ class DeliveryNavigator(object):
             "Home-return heading aligned; corridor centering will reacquire "
             "walls before passing the return command")
 
-        if not self.drive_corridor_to_home(
+        self.set_corridor_return_mode(True)
+        rospy.sleep(0.1)
+        try:
+            corridor_return_succeeded = self.drive_corridor_to_home(
                 self.home_pose,
                 HOME_LOCATION_NAME,
                 HOME_NEARBY_STOP_DISTANCE,
-                home_return_corridor_yaw):
+                home_return_corridor_yaw)
+        finally:
+            self.set_corridor_return_mode(False)
+        if not corridor_return_succeeded:
             if self.cancel_mission:
                 rospy.loginfo(
                     "Initial-position return interrupted by a replacement "
@@ -2588,6 +2604,7 @@ class DeliveryNavigator(object):
         self.cancel_pending_resume()
         self.last_resume_command_wall_time = None
         self.item_received = False
+        self.set_corridor_return_mode(False)
         try:
             self.client.cancel_all_goals()
         except Exception as exc:

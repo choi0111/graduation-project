@@ -50,6 +50,7 @@
     <param name="heading_deadband_deg" value="1.5" />
     <param name="centering_deadband" value="0.04" />
     <param name="maximum_correction" value="0.06" />
+    <param name="return_maximum_centering_correction" value="0.025" />
     <param name="centering_slow_error" value="0.12" />
     <param name="centering_slow_heading_deg" value="4.0" />
     <param name="centering_slow_speed" value="0.06" />
