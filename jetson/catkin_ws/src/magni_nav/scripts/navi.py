@@ -15,7 +15,7 @@ from move_base_msgs.msg import MoveBaseAction, MoveBaseGoal
 from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import Odometry
 from sensor_msgs.msg import LaserScan
-from std_msgs.msg import Bool, Empty, String
+from std_msgs.msg import Empty, String
 
 # =========================================================
 # 1. [완벽 복구된 좌표 데이터베이스]
@@ -55,7 +55,6 @@ locations = {
 cmd_vel_pub = None
 cmd_vel_nav_pub = None
 corridor_reset_pub = None
-corridor_return_mode_pub = None
 
 CENTER_XY_GOAL_TOLERANCE = 1.00
 FINAL_XY_GOAL_TOLERANCE = 0.15
@@ -93,8 +92,6 @@ STAGING_LINE_CROSS_TOLERANCE = 0.40
 STAGING_LINE_CROSS_TOLERANCES = {
     u"542호_중앙": 0.65,
     u"542호_대형_중앙": 0.65,
-    u"544호_중앙": 0.65,
-    u"545호_중앙": 0.65,
 }
 STAGING_LINE_MISS_STOP_TOLERANCE = 0.10
 GOAL_PROGRESS_LOG_INTERVAL = 1.0
@@ -145,8 +142,6 @@ ROTATION_CLEARANCE_RADIUS = (
     math.hypot(ROBOT_HALF_WIDTH, ROBOT_REAR_FROM_LIDAR) +
     ROTATION_CLEARANCE_MARGIN)
 ROTATION_CLEARANCE_REQUIRED_POINTS = 5
-ROTATION_CLEARANCE_WAIT_TIMEOUT = 10.0
-ROTATION_CLEARANCE_CLEAR_SAMPLES = 3
 LIDAR_APPROACH_LIMIT_MARGIN = 0.12
 LIDAR_APPROACH_SPEED = 0.05
 LIDAR_APPROACH_SLOW_SPEED = 0.03
@@ -176,18 +171,12 @@ ITEM_PROMPT_TTS_WAIT_TIMEOUT = 30.0
 HOME_LOCATION_NAME = u"initial_home"
 HOME_POSITION_VERIFY_TOLERANCE = 0.25
 HOME_YAW_VERIFY_TOLERANCE = math.radians(4.0)
-HOME_ALIGNMENT_MAX_ATTEMPTS = 3
-HOME_HEADING_STABLE_SAMPLES = 8
-HOME_HEADING_STABLE_TIMEOUT = 2.0
+HOME_ALIGNMENT_MAX_ATTEMPTS = 2
 HOME_CORRIDOR_SPEED = 0.10
 HOME_FINAL_APPROACH_SPEED = 0.04
 HOME_FINAL_APPROACH_DISTANCE = 1.50
 HOME_NEARBY_STOP_DISTANCE = 1.90
 HOME_NEARBY_VERIFY_TOLERANCE = 2.00
-HOME_LONGITUDINAL_TOLERANCE = 0.15
-HOME_LONGITUDINAL_VERIFY_TOLERANCE = 0.25
-HOME_LONGITUDINAL_MAX_ADJUST = 1.20
-HOME_LONGITUDINAL_ADJUST_SPEED = 0.04
 HOME_FINAL_DRIVE_HEADING_ERROR = math.radians(8.0)
 HOME_CORRIDOR_HEADING_KP = 0.60
 HOME_CORRIDOR_MAX_ANGULAR_SPEED = 0.05
@@ -283,7 +272,6 @@ def normalize_angle(angle):
 class DeliveryNavigator(object):
     def __init__(self):
         global cmd_vel_pub, cmd_vel_nav_pub, corridor_reset_pub
-        global corridor_return_mode_pub
         rospy.init_node('navi_cmd_node')
         self.odom_position = None
         self.odom_yaw = None
@@ -314,10 +302,6 @@ class DeliveryNavigator(object):
             '/cmd_vel_nav', Twist, queue_size=10)
         corridor_reset_pub = rospy.Publisher(
             '/corridor_centering/reset', Empty, queue_size=1)
-        corridor_return_mode_pub = rospy.Publisher(
-            '/corridor_centering/return_mode', Bool,
-            queue_size=1, latch=True)
-        corridor_return_mode_pub.publish(Bool(data=False))
         self.status_pub = rospy.Publisher('/robot_status', String, queue_size=10)
         self.command_sub = rospy.Subscriber('/llm_command', String, self.command_callback)
         self.tts_event_sub = rospy.Subscriber(
@@ -381,9 +365,6 @@ class DeliveryNavigator(object):
         twist = Twist()
         cmd_vel_nav_pub.publish(twist)
         cmd_vel_pub.publish(twist)
-
-    def set_corridor_return_mode(self, enabled):
-        corridor_return_mode_pub.publish(Bool(data=bool(enabled)))
 
     def reset_corridor_direction_state(self):
         reset_message = Empty()
@@ -684,7 +665,6 @@ class DeliveryNavigator(object):
         self.cancel_mission = True
         self.paused = False
         self.cancel_pending_resume()
-        self.set_corridor_return_mode(False)
 
         try:
             self.client.cancel_all_goals()
@@ -1201,75 +1181,26 @@ class DeliveryNavigator(object):
             return False
         return True
 
-    def wait_for_safe_rotation_clearance(self, context):
-        deadline = time.time() + ROTATION_CLEARANCE_WAIT_TIMEOUT
-        clear_samples = 0
-        last_counted_clear_scan = None
-        waiting_logged = False
-        rate = rospy.Rate(20)
-
-        while not rospy.is_shutdown() and time.time() < deadline:
-            if self.cancel_mission:
-                self.stop_robot()
-                return False
-
-            if self.paused:
-                pause_started = time.time()
-                self.stop_robot()
-                self.wait_while_paused()
-                deadline += time.time() - pause_started
-                continue
-
-            scan_is_fresh = (
-                self.last_front_scan_wall_time is not None and
-                time.time() - self.last_front_scan_wall_time <=
-                FRONT_SCAN_STALE_TIMEOUT)
-            if scan_is_fresh and self.rotation_clearance_is_safe():
-                if self.last_front_scan_wall_time != last_counted_clear_scan:
-                    clear_samples += 1
-                    last_counted_clear_scan = self.last_front_scan_wall_time
-                if clear_samples >= ROTATION_CLEARANCE_CLEAR_SAMPLES:
-                    if waiting_logged:
-                        rospy.loginfo(
-                            "%s rotation clearance restored at %.3f m; "
-                            "continuing the same mission",
-                            context,
-                            self.rotation_clearance_distance)
-                    return True
-            else:
-                clear_samples = 0
-                last_counted_clear_scan = None
-                if not waiting_logged:
-                    rospy.logwarn(
-                        "%s waiting for rotation clearance: nearest surface "
-                        "%.3f m, required %.3f m",
-                        context,
-                        self.rotation_clearance_distance
-                        if self.rotation_clearance_distance is not None else
-                        -1.0,
-                        ROTATION_CLEARANCE_RADIUS)
-                    waiting_logged = True
-
-            self.stop_robot()
-            rate.sleep()
-
-        rospy.logerr(
-            "%s rotation clearance did not recover within %.1f seconds: "
-            "nearest surface %.3f m, required %.3f m",
-            context,
-            ROTATION_CLEARANCE_WAIT_TIMEOUT,
-            self.rotation_clearance_distance
-            if self.rotation_clearance_distance is not None else -1.0,
-            ROTATION_CLEARANCE_RADIUS)
-        self.stop_robot()
-        return False
-
     def rotate_to_map_yaw(self, target_name, target_yaw, action_text,
                           min_angular_speed=ALIGN_MIN_ANGULAR_SPEED,
                           max_angular_speed=ALIGN_MAX_ANGULAR_SPEED,
                           timeout=ALIGN_TIMEOUT,
                           preferred_turn_direction=None):
-        if not self.wait_for_safe_rotation_clearance(action_text):
+        if not self.wait_for_fresh_front_scan(FRONT_SCAN_WAIT_TIMEOUT):
+            rospy.logerr(
+                "Fresh /scan data is required before direct rotation")
+            self.stop_robot()
+            return False
+        if (self.rotation_clearance_distance is None or
+                self.rotation_clearance_distance <
+                ROTATION_CLEARANCE_RADIUS):
+            rospy.logerr(
+                "Direct rotation refused: nearest surface %.3f m, "
+                "required %.3f m",
+                self.rotation_clearance_distance
+                if self.rotation_clearance_distance is not None else -1.0,
+                ROTATION_CLEARANCE_RADIUS)
+            self.stop_robot()
             return False
 
         required_rotation = normalize_angle(target_yaw - self.amcl_yaw)
@@ -1307,15 +1238,21 @@ class DeliveryNavigator(object):
                 return False
             if (self.last_front_scan_wall_time is None or
                     time.time() - self.last_front_scan_wall_time >
-                    FRONT_SCAN_STALE_TIMEOUT or
-                    not self.rotation_clearance_is_safe()):
-                clearance_wait_started = time.time()
-                if not self.wait_for_safe_rotation_clearance(
-                        "direct rotation"):
-                    return False
-                start_time += time.time() - clearance_wait_started
-                last_odom_yaw = self.odom_yaw
-                continue
+                    FRONT_SCAN_STALE_TIMEOUT):
+                rospy.logerr("/scan stopped during direct rotation")
+                self.stop_robot()
+                return False
+            if (self.rotation_clearance_distance is None or
+                    self.rotation_clearance_distance <
+                    ROTATION_CLEARANCE_RADIUS):
+                rospy.logerr(
+                    "Direct rotation stopped: nearest surface %.3f m, "
+                    "required %.3f m",
+                    self.rotation_clearance_distance
+                    if self.rotation_clearance_distance is not None else -1.0,
+                    ROTATION_CLEARANCE_RADIUS)
+                self.stop_robot()
+                return False
 
             odom_step = normalize_angle(self.odom_yaw - last_odom_yaw)
             accumulated_rotation += odom_step
@@ -1966,145 +1903,6 @@ class DeliveryNavigator(object):
         self.stop_corridor_drive()
         return False
 
-    def adjust_home_longitudinal_position(self):
-        if not self.refresh_localization_from_tf():
-            rospy.logerr(
-                "Cannot verify the robot pose before home longitudinal "
-                "adjustment")
-            return False
-
-        forward_x = math.cos(self.home_yaw)
-        forward_y = math.sin(self.home_yaw)
-        error = (
-            (self.home_pose[0] - self.amcl_position[0]) * forward_x +
-            (self.home_pose[1] - self.amcl_position[1]) * forward_y)
-
-        if abs(error) <= HOME_LONGITUDINAL_TOLERANCE:
-            rospy.loginfo(
-                "Home longitudinal position already within %.3f m "
-                "(error %.3f m)",
-                HOME_LONGITUDINAL_TOLERANCE,
-                error)
-            return True
-
-        distance = min(abs(error), HOME_LONGITUDINAL_MAX_ADJUST)
-        speed = (
-            HOME_LONGITUDINAL_ADJUST_SPEED
-            if error > 0.0 else -HOME_LONGITUDINAL_ADJUST_SPEED)
-        direction_text = "forward" if speed > 0.0 else "backward"
-        rospy.loginfo(
-            "Adjusting home longitudinal position %s by %.3f m "
-            "(axis error %.3f m)",
-            direction_text,
-            distance,
-            error)
-
-        timeout = distance / HOME_LONGITUDINAL_ADJUST_SPEED + 8.0
-        if not self.drive_straight_distance(
-                "adjusting home longitudinal position",
-                distance,
-                speed,
-                timeout,
-                rear_guard_completes_motion=(speed < 0.0)):
-            return False
-
-        if not self.refresh_localization_from_tf():
-            rospy.logerr(
-                "Cannot verify the robot pose after home longitudinal "
-                "adjustment")
-            return False
-
-        remaining_error = (
-            (self.home_pose[0] - self.amcl_position[0]) * forward_x +
-            (self.home_pose[1] - self.amcl_position[1]) * forward_y)
-        if abs(remaining_error) > HOME_LONGITUDINAL_VERIFY_TOLERANCE:
-            rospy.logerr(
-                "Home longitudinal adjustment ended too far from the "
-                "initial axis: %.3f m",
-                remaining_error)
-            return False
-        rospy.loginfo(
-            "Home longitudinal adjustment complete: remaining axis error "
-            "%.3f m",
-            remaining_error)
-        return True
-
-    def home_heading_is_stable(self):
-        deadline = time.time() + HOME_HEADING_STABLE_TIMEOUT
-        stable_samples = 0
-        rate = rospy.Rate(20)
-
-        while not rospy.is_shutdown() and time.time() < deadline:
-            if self.cancel_mission:
-                return False
-
-            map_pose = self.lookup_map_pose()
-            if map_pose is None:
-                stable_samples = 0
-                self.stop_robot()
-                rate.sleep()
-                continue
-
-            self.amcl_position = map_pose[0]
-            self.amcl_yaw = map_pose[1]
-            yaw_error = abs(normalize_angle(
-                self.home_yaw - self.amcl_yaw))
-            if yaw_error > HOME_YAW_VERIFY_TOLERANCE:
-                return False
-
-            stable_samples += 1
-            self.stop_robot()
-            if stable_samples >= HOME_HEADING_STABLE_SAMPLES:
-                rospy.loginfo(
-                    "Initial heading stable at %.1f deg error for %d "
-                    "samples",
-                    math.degrees(yaw_error),
-                    stable_samples)
-                return True
-            rate.sleep()
-
-        return False
-
-    def align_home_heading(self, action_text):
-        for attempt in range(HOME_ALIGNMENT_MAX_ATTEMPTS):
-            if not self.refresh_localization_from_tf():
-                rospy.logerr(
-                    "Cannot verify the robot heading at the initial "
-                    "position")
-                return False
-
-            home_yaw_error = normalize_angle(
-                self.home_yaw - self.amcl_yaw)
-            if abs(home_yaw_error) > HOME_YAW_VERIFY_TOLERANCE:
-                preferred_direction = (
-                    self.preferred_home_turn_direction()
-                    if attempt == 0 else None)
-                if not self.rotate_to_map_yaw(
-                        HOME_LOCATION_NAME,
-                        self.home_yaw,
-                        action_text,
-                        NEXT_GOAL_MIN_ANGULAR_SPEED,
-                        NEXT_GOAL_MAX_ANGULAR_SPEED,
-                        NEXT_GOAL_ALIGN_TIMEOUT,
-                        preferred_direction):
-                    return False
-                self.stop_robot()
-                rospy.sleep(0.5)
-
-            if self.home_heading_is_stable():
-                return True
-
-            rospy.logwarn(
-                "Initial heading verification changed after attempt %d; "
-                "realigning",
-                attempt + 1)
-
-        rospy.logerr(
-            "Initial heading did not remain within tolerance for %d "
-            "attempts",
-            HOME_ALIGNMENT_MAX_ATTEMPTS)
-        return False
-
     def wait_for_fresh_front_scan(self, timeout):
         deadline = time.time() + timeout
         while not rospy.is_shutdown() and time.time() < deadline:
@@ -2407,11 +2205,6 @@ class DeliveryNavigator(object):
             return False
 
         if not self.backup_for_next_destination():
-            if self.cancel_mission:
-                rospy.loginfo(
-                    "Initial-position return interrupted by a replacement "
-                    "mission during backup")
-                return False
             rospy.logerr(
                 "Failed to back up before returning to the initial position")
             return False
@@ -2430,11 +2223,6 @@ class DeliveryNavigator(object):
                 NEXT_GOAL_MIN_ANGULAR_SPEED,
                 NEXT_GOAL_MAX_ANGULAR_SPEED,
                 NEXT_GOAL_ALIGN_TIMEOUT):
-            if self.cancel_mission:
-                rospy.loginfo(
-                    "Initial-position return interrupted by a replacement "
-                    "mission during alignment")
-                return False
             rospy.logerr(
                 "Failed to align toward the initial position before return")
             return False
@@ -2444,22 +2232,11 @@ class DeliveryNavigator(object):
             "Home-return heading aligned; corridor centering will reacquire "
             "walls before passing the return command")
 
-        self.set_corridor_return_mode(True)
-        rospy.sleep(0.1)
-        try:
-            corridor_return_succeeded = self.drive_corridor_to_home(
+        if not self.drive_corridor_to_home(
                 self.home_pose,
                 HOME_LOCATION_NAME,
                 HOME_NEARBY_STOP_DISTANCE,
-                home_return_corridor_yaw)
-        finally:
-            self.set_corridor_return_mode(False)
-        if not corridor_return_succeeded:
-            if self.cancel_mission:
-                rospy.loginfo(
-                    "Initial-position return interrupted by a replacement "
-                    "mission during corridor travel")
-                return False
+                home_return_corridor_yaw):
             rospy.logerr(
                 "Corridor-controlled return near the initial position failed")
             return False
@@ -2484,17 +2261,42 @@ class DeliveryNavigator(object):
             "only heading alignment remains",
             home_position_error)
 
-        if not self.align_home_heading(
-                "turning 180 degrees to the initial heading"):
-            return False
+        home_alignment_ok = False
+        for _attempt in range(HOME_ALIGNMENT_MAX_ATTEMPTS):
+            if not self.refresh_localization_from_tf():
+                rospy.logerr(
+                    "Cannot verify the robot heading at the initial position")
+                return False
+            home_yaw_error = normalize_angle(
+                self.home_yaw - self.amcl_yaw)
+            if abs(home_yaw_error) <= HOME_YAW_VERIFY_TOLERANCE:
+                home_alignment_ok = True
+                break
+            if not self.rotate_to_map_yaw(
+                    HOME_LOCATION_NAME,
+                    self.home_yaw,
+                    "aligning near initial position",
+                    NEXT_GOAL_MIN_ANGULAR_SPEED,
+                    NEXT_GOAL_MAX_ANGULAR_SPEED,
+                    NEXT_GOAL_ALIGN_TIMEOUT,
+                    self.preferred_home_turn_direction()):
+                return False
+            self.stop_robot()
+            rospy.sleep(0.5)
 
-        if not self.adjust_home_longitudinal_position():
+        if not home_alignment_ok:
+            if not self.refresh_localization_from_tf():
+                rospy.logerr(
+                    "Cannot verify the robot heading after final alignment")
+                return False
+            home_yaw_error = normalize_angle(
+                self.home_yaw - self.amcl_yaw)
+            home_alignment_ok = (
+                abs(home_yaw_error) <= HOME_YAW_VERIFY_TOLERANCE)
+        if not home_alignment_ok:
             rospy.logerr(
-                "Failed to adjust the initial-position longitudinal axis")
-            return False
-
-        if not self.align_home_heading(
-                "realigning after home longitudinal adjustment"):
+                "Initial heading did not converge within %d attempts",
+                HOME_ALIGNMENT_MAX_ATTEMPTS)
             return False
 
         self.stop_corridor_drive()
@@ -2507,29 +2309,19 @@ class DeliveryNavigator(object):
             self.amcl_position[1] - self.home_pose[1])
         final_home_yaw_error = abs(normalize_angle(
             self.home_yaw - self.amcl_yaw))
-        forward_x = math.cos(self.home_yaw)
-        forward_y = math.sin(self.home_yaw)
-        final_home_longitudinal_error = abs(
-            (self.home_pose[0] - self.amcl_position[0]) * forward_x +
-            (self.home_pose[1] - self.amcl_position[1]) * forward_y)
         if (final_home_position_error > HOME_NEARBY_VERIFY_TOLERANCE or
-                final_home_longitudinal_error >
-                HOME_LONGITUDINAL_VERIFY_TOLERANCE or
                 final_home_yaw_error > HOME_YAW_VERIFY_TOLERANCE):
             rospy.logerr(
-                "Final near-home verification failed: %.3f m, "
-                "axis %.3f m, %.1f deg",
+                "Final near-home verification failed: %.3f m, %.1f deg",
                 final_home_position_error,
-                final_home_longitudinal_error,
                 math.degrees(final_home_yaw_error))
             return False
 
         self.stop_corridor_drive()
         rospy.loginfo(
             "[RETURNED] 초기 위치 근처 정지 완료: position %.3f m, "
-            "axis %.3f m, yaw %.1f deg",
+            "yaw %.1f deg",
             final_home_position_error,
-            final_home_longitudinal_error,
             math.degrees(final_home_yaw_error))
         return True
 
@@ -2591,7 +2383,7 @@ class DeliveryNavigator(object):
             self.current_target = ""
             self.publish_status("RETURN_FAILED")
             return
-        self.stop_corridor_drive()
+        self.stop_robot()
         self.current_target = ""
         self.publish_status("IDLE")
 
@@ -2604,14 +2396,13 @@ class DeliveryNavigator(object):
         self.cancel_pending_resume()
         self.last_resume_command_wall_time = None
         self.item_received = False
-        self.set_corridor_return_mode(False)
         try:
             self.client.cancel_all_goals()
         except Exception as exc:
             rospy.logwarn(
                 "Failed to cancel move_base goal during mission replacement: %s",
                 exc)
-        self.stop_corridor_drive()
+        self.stop_robot()
 
         old_thread = self.active_thread
         if old_thread and old_thread.is_alive():
@@ -2628,7 +2419,6 @@ class DeliveryNavigator(object):
         # the same SimpleActionClient is reused for the replacement goal.
         rospy.sleep(0.2)
         self.active_thread = None
-        self.reset_corridor_direction_state()
         self.cancel_mission = False
         self.waiting_for_item = False
         rospy.loginfo(
