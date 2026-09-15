@@ -54,6 +54,7 @@ locations = {
 
 cmd_vel_pub = None
 cmd_vel_nav_pub = None
+cmd_vel_return_pub = None
 corridor_reset_pub = None
 
 CENTER_XY_GOAL_TOLERANCE = 1.00
@@ -272,6 +273,7 @@ def normalize_angle(angle):
 class DeliveryNavigator(object):
     def __init__(self):
         global cmd_vel_pub, cmd_vel_nav_pub, corridor_reset_pub
+        global cmd_vel_return_pub
         rospy.init_node('navi_cmd_node')
         self.odom_position = None
         self.odom_yaw = None
@@ -300,6 +302,8 @@ class DeliveryNavigator(object):
         cmd_vel_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         cmd_vel_nav_pub = rospy.Publisher(
             '/cmd_vel_nav', Twist, queue_size=10)
+        cmd_vel_return_pub = rospy.Publisher(
+            '/cmd_vel_return', Twist, queue_size=1)
         corridor_reset_pub = rospy.Publisher(
             '/corridor_centering/reset', Empty, queue_size=1)
         self.status_pub = rospy.Publisher('/robot_status', String, queue_size=10)
@@ -363,6 +367,7 @@ class DeliveryNavigator(object):
 
     def stop_corridor_drive(self):
         twist = Twist()
+        cmd_vel_return_pub.publish(twist)
         cmd_vel_nav_pub.publish(twist)
         cmd_vel_pub.publish(twist)
 
@@ -1759,7 +1764,6 @@ class DeliveryNavigator(object):
             HOME_CORRIDOR_TIMEOUT_MARGIN)
         start_time = time.time()
         last_progress_log = 0.0
-        final_approach_started = False
         rate = rospy.Rate(10)
 
         print(
@@ -1833,67 +1837,17 @@ class DeliveryNavigator(object):
 
             heading_error = normalize_angle(corridor_yaw - self.amcl_yaw)
 
-            if (not final_approach_started and
-                    abs(heading_error) >=
-                    HOME_CORRIDOR_REALIGN_HEADING_ERROR):
-                self.stop_corridor_drive()
-                realign_started = time.time()
-                rospy.logwarn(
-                    "Home-return corridor heading drifted %.1f deg; "
-                    "stopping to realign before continuing",
-                    math.degrees(heading_error))
-                if not self.rotate_to_map_yaw(
-                        target_name,
-                        corridor_yaw,
-                        "realigning with the home-return corridor",
-                        NEXT_GOAL_MIN_ANGULAR_SPEED,
-                        NEXT_GOAL_MAX_ANGULAR_SPEED,
-                        NEXT_GOAL_ALIGN_TIMEOUT):
-                    rospy.logerr(
-                        "Failed to restore the home-return corridor heading")
-                    return False
-                start_time += time.time() - realign_started
-                self.stop_robot()
-                self.reset_corridor_direction_state()
-                rospy.sleep(0.2)
-                continue
-
-            if (not final_approach_started and
-                    distance <= HOME_FINAL_APPROACH_DISTANCE):
-                self.stop_corridor_drive()
-                final_approach_started = True
-                rospy.loginfo(
-                    "%s final approach started at %.3f m; "
-                    "corridor centering bypassed",
-                    console_text(target_name),
-                    distance)
-
+            # Map pose decides arrival only. The wall controller owns steering
+            # in odom, including short gaps in the visible corridor walls.
             command = Twist()
-            command.linear.x = (
-                HOME_FINAL_APPROACH_SPEED
-                if final_approach_started
-                else HOME_CORRIDOR_SPEED)
-            if final_approach_started:
-                if abs(heading_error) >= HOME_FINAL_DRIVE_HEADING_ERROR:
-                    command.linear.x = 0.0
-            elif abs(heading_error) >= HOME_CORRIDOR_MAX_HEADING_ERROR:
-                command.linear.x = min(
-                    command.linear.x, HOME_FINAL_APPROACH_SPEED)
-            command.angular.z = max(
-                -HOME_CORRIDOR_MAX_ANGULAR_SPEED,
-                min(
-                    HOME_CORRIDOR_MAX_ANGULAR_SPEED,
-                    HOME_CORRIDOR_HEADING_KP * heading_error))
-            if final_approach_started:
-                cmd_vel_pub.publish(command)
-            else:
-                cmd_vel_nav_pub.publish(command)
+            command.linear.x = HOME_CORRIDOR_SPEED
+            cmd_vel_return_pub.publish(command)
 
             now = time.time()
             if now - last_progress_log >= GOAL_PROGRESS_LOG_INTERVAL:
                 print(
                     "[navi] {} corridor return distance {:.3f} m "
-                    "heading error {:.1f} deg".format(
+                    "map heading difference {:.1f} deg (diagnostic only)".format(
                         console_text(target_name),
                         distance,
                         math.degrees(heading_error)))
@@ -2237,6 +2191,9 @@ class DeliveryNavigator(object):
                 HOME_LOCATION_NAME,
                 HOME_NEARBY_STOP_DISTANCE,
                 home_return_corridor_yaw):
+            if self.cancel_mission:
+                rospy.loginfo("Home return cancelled for a replacement mission")
+                return False
             rospy.logerr(
                 "Corridor-controlled return near the initial position failed")
             return False
@@ -2445,8 +2402,8 @@ class DeliveryNavigator(object):
                 self.resume_status = self.current_state
             self.paused = True
             self.last_resume_command_wall_time = None
-            self.client.cancel_goal()
-            self.stop_robot()
+            self.cancel_goal_if_active()
+            self.stop_corridor_drive()
             self.publish_status("PAUSED")
             rospy.loginfo(
                 "Mission paused without clearing the active destination")

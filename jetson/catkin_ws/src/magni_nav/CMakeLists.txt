@@ -7,3 +7,7 @@ catkin_install_python(PROGRAMS
   scripts/corridor_centering.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
+
+install(FILES scripts/return_corridor.py
+  DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
+)

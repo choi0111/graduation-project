@@ -2,13 +2,19 @@
 # -*- coding: utf-8 -*-
 
 import math
+import os
+import sys
 import threading
 import time
 
 import rospy
 from geometry_msgs.msg import Twist
 from sensor_msgs.msg import LaserScan
+from nav_msgs.msg import Odometry
 from std_msgs.msg import Empty
+# catkin's devel relay executes this source with a different sys.path[0].
+sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
+from return_corridor import ReturnCorridor
 
 
 class CorridorCentering(object):
@@ -111,12 +117,23 @@ class CorridorCentering(object):
         self.normal_corridor_seen = False
         self.wall_mode = 'none'
         self.last_scan_wall_time = None
+        self.return_controller = ReturnCorridor(self.expected_corridor_width)
+        self.return_pose = None
+        self.return_odom_time = None
+        self.return_front_clear = False
+        self.return_command_time = None
 
         self.cmd_pub = rospy.Publisher('/cmd_vel', Twist, queue_size=10)
         self.scan_sub = rospy.Subscriber(
             '/scan', LaserScan, self.scan_callback, queue_size=1)
         self.cmd_sub = rospy.Subscriber(
             '/cmd_vel_nav', Twist, self.cmd_callback, queue_size=10)
+        self.return_sub = rospy.Subscriber(
+            '/cmd_vel_return', Twist, self.return_cmd_callback, queue_size=1)
+        self.odom_sub = rospy.Subscriber(
+            '/odom', Odometry, self.return_odom_callback, queue_size=1)
+        self.return_watchdog = rospy.Timer(
+            rospy.Duration(0.1), self.check_return_command)
         self.reset_sub = rospy.Subscriber(
             '/corridor_centering/reset', Empty, self.reset_callback,
             queue_size=1)
@@ -143,6 +160,60 @@ class CorridorCentering(object):
             self.last_scan_wall_time = None
         rospy.loginfo(
             "corridor_centering: cleared direction-dependent wall state")
+
+    def return_odom_callback(self, msg):
+        p, q = msg.pose.pose.position, msg.pose.pose.orientation
+        yaw = math.atan2(2*(q.w*q.z+q.x*q.y), 1-2*(q.y*q.y+q.z*q.z))
+        with self.lock:
+            if any(math.isnan(v) or math.isinf(v) for v in (p.x, p.y, yaw)):
+                self.return_pose = None
+                self.return_controller = ReturnCorridor(self.expected_corridor_width)
+                return
+            if self.return_pose is not None:
+                px, py, old_yaw = self.return_pose
+                dt = min(1.0, max(0.0, time.time()-self.return_odom_time))
+                if (math.hypot(p.x-px, p.y-py) > 0.10+0.30*dt or
+                        abs(math.atan2(math.sin(yaw-old_yaw),
+                                       math.cos(yaw-old_yaw))) > 0.10+0.30*dt):
+                    self.return_controller = ReturnCorridor(self.expected_corridor_width)
+                    rospy.logwarn('corridor_return: odometry discontinuity; reacquiring walls')
+            self.return_pose = (p.x, p.y, yaw)
+            self.return_odom_time = time.time()
+
+    def check_return_command(self, _event):
+        with self.lock:
+            if (self.return_command_time is not None and
+                    time.time()-self.return_command_time > 0.5):
+                self.return_command_time = None
+                self.cmd_pub.publish(Twist())
+
+    def return_cmd_callback(self, msg):
+        with self.lock:
+            now = time.time()
+            command = Twist()
+            if msg.linear.x <= 0:
+                self.return_command_time = None
+                self.cmd_pub.publish(command)
+                return
+            self.return_command_time = now
+            reason = 'waiting for fresh scan and odometry'
+            if (self.return_pose is not None and
+                    now-self.return_odom_time <= 0.5 and
+                    self.last_scan_wall_time is not None and
+                    now-self.last_scan_wall_time <= self.scan_timeout):
+                side_limit = self.robot_half_width + self.minimum_edge_clearance
+                near_wall = any(d is not None and d < side_limit for d in
+                                (self.safety_left_distance, self.safety_right_distance))
+                if near_wall or not self.return_front_clear:
+                    reason = 'blocked swept path or side clearance'
+                else:
+                    speed, angular, reason = self.return_controller.command(
+                        self.return_pose, msg.linear.x)
+                    command.linear.x, command.angular.z = speed, angular
+            self.cmd_pub.publish(command)
+            rospy.loginfo_throttle(
+                2.0, 'corridor_return: %s speed %.3f angular %.3f',
+                reason, command.linear.x, command.angular.z)
 
     @staticmethod
     def median(values):
@@ -202,6 +273,8 @@ class CorridorCentering(object):
         left_wall_points = []
         right_wall_points = []
         angle = msg.angle_min
+        front_samples = 0
+        front_blocked = False
 
         for measured_range in msg.ranges:
             if (not math.isnan(measured_range) and
@@ -209,6 +282,13 @@ class CorridorCentering(object):
                     measured_range >= msg.range_min and
                     measured_range <= msg.range_max and
                     not self.is_robot_self_return(measured_range, angle)):
+                px = measured_range * math.cos(angle)
+                py = measured_range * math.sin(angle)
+                if abs(angle) < math.radians(30):
+                    front_samples += 1
+                if (0 < px < self.robot_front_from_lidar + 0.30 and
+                        abs(py) < self.robot_half_width + 0.05):
+                    front_blocked = True
                 absolute_angle = abs(angle)
                 if (self.side_min_angle <= absolute_angle <=
                         self.side_max_angle):
@@ -261,6 +341,11 @@ class CorridorCentering(object):
             right_heading = None
 
         with self.lock:
+            self.return_front_clear = front_samples >= self.minimum_samples and not front_blocked
+            if (self.return_pose is not None and
+                    time.time()-self.return_odom_time <= 0.5):
+                self.return_controller.observe(
+                    left_wall_points, right_wall_points, self.return_pose)
             nominal_width = self.nominal_corridor_width
             current_width = None
             if left is not None and right is not None:
