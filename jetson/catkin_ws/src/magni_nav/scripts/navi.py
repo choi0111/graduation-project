@@ -2235,6 +2235,11 @@ class DeliveryNavigator(object):
             return False
 
         if not self.backup_for_next_destination():
+            if self.cancel_mission:
+                rospy.loginfo(
+                    "Initial-position return interrupted by a replacement "
+                    "mission during backup")
+                return False
             rospy.logerr(
                 "Failed to back up before returning to the initial position")
             return False

@@ -45,6 +45,14 @@ LLM_SUPPORT_DIR = os.environ.get(
 load_dotenv(os.path.join(LLM_SUPPORT_DIR, ".env"))
 load_dotenv()
 
+
+def transcription_session_is_open(listening_paused, stt_engine):
+    return (
+        not listening_paused and
+        stt_engine is not None and
+        bool(getattr(stt_engine, "is_awake", False)))
+
+
 class VoiceControlNode:
     def __init__(self):
         logging.getLoggerClass().findCaller = _universal_findCaller
@@ -145,6 +153,10 @@ class VoiceControlNode:
     def play_robot_speech(self, text, completion_event=None):
         self.is_listening_paused = True
         self.last_speech_time = time.time()
+        if self.stt_engine:
+            # Close the previous wake session before TTS. A transcription that
+            # was already being processed must not become a later command.
+            self.stt_engine.is_awake = False
         rospy.loginfo(f"🔊 [로봇]: {text}")
         
         # --- 17개 다운로드 파일 자동 매칭 스위치 ---
@@ -178,7 +190,12 @@ class VoiceControlNode:
         threading.Thread(target=speak, daemon=True).start()
 
     def on_transcription_received(self, text):
-        if self.is_listening_paused: return
+        if not transcription_session_is_open(
+                self.is_listening_paused, self.stt_engine):
+            rospy.logwarn(
+                "Ignored transcription from a closed wake session: %s",
+                text)
+            return
         
         json_cmd = llm_module2.parse_command_to_json(text, self.llm_client)
         scenario = json_cmd.get("command", "UNKNOWN")
