@@ -159,6 +159,20 @@ class ReturnTests(unittest.TestCase):
         self.assertFalse(candidate(True, True, False))
         self.assertFalse(candidate(False, True, True))
 
+    def test_home_axis_arrival_ignores_lateral_offset(self):
+        tree = ast.parse((SCRIPTS/'navi.py').read_text(encoding='utf-8'))
+        function = next(
+            n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and
+            n.name == 'pose_axis_errors')
+        env = dict(math=math)
+        exec(compile(ast.Module(body=[function], type_ignores=[]),
+                     '<pose-axis-errors>', 'exec'), env)
+        longitudinal, lateral = env['pose_axis_errors'](
+            (0.30, 4.00), (0.00, 0.00), 0.0)
+        self.assertAlmostEqual(abs(longitudinal), 0.30)
+        self.assertAlmostEqual(abs(lateral), 4.00)
+
     def return_node(self):
         tree = ast.parse((SCRIPTS/'corridor_centering.py').read_text(encoding='utf-8'))
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))
@@ -211,15 +225,20 @@ class ReturnTests(unittest.TestCase):
         method = next(n for n in cls.body if getattr(n, 'name', '') == 'drive_corridor_to_home')
         env = dict(math=math, time=types.SimpleNamespace(time=lambda: 10.),
                    rospy=ros_stub(), Twist=twist, console_text=str,
-                   normalize_angle=lambda a: math.atan2(math.sin(a), math.cos(a)))
+                   normalize_angle=lambda a: math.atan2(math.sin(a), math.cos(a)),
+                   pose_axis_errors=lambda current, target, yaw: (
+                       math.cos(yaw)*(target[0]-current[0]) +
+                       math.sin(yaw)*(target[1]-current[1]),
+                       -math.sin(yaw)*(target[0]-current[0]) +
+                       math.cos(yaw)*(target[1]-current[1])))
         for n in tree.body:
             if isinstance(n, ast.Assign) and len(n.targets) == 1 and isinstance(n.targets[0], ast.Name):
                 name = n.targets[0].id
                 if name.startswith(('HOME_', 'ODOM_', 'AMCL_', 'GOAL_PROGRESS_')):
                     env[name] = eval(compile(ast.Expression(n.value), '<constant>', 'eval'), env)
         exec(compile(ast.Module(body=[method], type_ignores=[]), '<return>', 'exec'), env)
-        poses = iter([(3., 0.), (1.8, 0.)])
-        robot = types.SimpleNamespace(home_pose=(0., 0.), amcl_position=(5., 0.),
+        poses = iter([(3., 4.), (1.8, 4.)])
+        robot = types.SimpleNamespace(home_pose=(0., 0.), amcl_position=(5., 4.),
             amcl_yaw=math.pi-.6, cancel_mission=False, paused=False,
             last_odom_wall_time=10., last_amcl_wall_time=10.,
             cancel_goal_if_active=lambda: None, stop_corridor_drive=lambda: None,

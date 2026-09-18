@@ -181,8 +181,8 @@ HOME_ALIGNMENT_MAX_ATTEMPTS = 2
 HOME_CORRIDOR_SPEED = 0.10
 HOME_FINAL_APPROACH_SPEED = 0.04
 HOME_FINAL_APPROACH_DISTANCE = 1.50
-HOME_NEARBY_STOP_DISTANCE = 1.90
-HOME_NEARBY_VERIFY_TOLERANCE = 2.00
+HOME_LONGITUDINAL_STOP_TOLERANCE = 0.35
+HOME_LONGITUDINAL_VERIFY_TOLERANCE = 0.45
 HOME_FINAL_DRIVE_HEADING_ERROR = math.radians(8.0)
 HOME_CORRIDOR_HEADING_KP = 0.60
 HOME_CORRIDOR_MAX_ANGULAR_SPEED = 0.05
@@ -273,6 +273,19 @@ def quaternion_to_yaw(orientation):
 
 def normalize_angle(angle):
     return math.atan2(math.sin(angle), math.cos(angle))
+
+
+def pose_axis_errors(current_position, target_position, axis_yaw):
+    """Return target error along and across the registered home axis."""
+    delta_x = target_position[0] - current_position[0]
+    delta_y = target_position[1] - current_position[1]
+    longitudinal = (
+        math.cos(axis_yaw) * delta_x +
+        math.sin(axis_yaw) * delta_y)
+    lateral = (
+        -math.sin(axis_yaw) * delta_x +
+        math.cos(axis_yaw) * delta_y)
+    return longitudinal, lateral
 
 
 class DeliveryNavigator(object):
@@ -1832,12 +1845,12 @@ class DeliveryNavigator(object):
         if corridor_yaw is None:
             corridor_yaw = self.amcl_yaw
 
-        start_distance = math.hypot(
-            target_pose[0] - self.amcl_position[0],
-            target_pose[1] - self.amcl_position[1])
-        best_distance = start_distance
+        start_longitudinal, start_lateral = pose_axis_errors(
+            self.amcl_position, target_pose, corridor_yaw)
+        start_axis_error = abs(start_longitudinal)
+        best_axis_error = start_axis_error
         timeout = (
-            start_distance / HOME_FINAL_APPROACH_SPEED +
+            start_axis_error / HOME_FINAL_APPROACH_SPEED +
             HOME_CORRIDOR_TIMEOUT_MARGIN)
         start_time = time.time()
         last_progress_log = 0.0
@@ -1845,8 +1858,10 @@ class DeliveryNavigator(object):
 
         print(
             "[navi] returning to {} with corridor control "
-            "({:.3f} m)".format(
-                console_text(target_name), start_distance))
+            "(longitudinal {:.3f} m, lateral {:.3f} m ignored)".format(
+                console_text(target_name),
+                start_axis_error,
+                abs(start_lateral)))
 
         while not rospy.is_shutdown():
             if self.cancel_mission:
@@ -1878,36 +1893,39 @@ class DeliveryNavigator(object):
                     self.stop_corridor_drive()
                     return False
 
-            current_x, current_y = self.amcl_position
-            delta_x = target_pose[0] - current_x
-            delta_y = target_pose[1] - current_y
-            distance = math.hypot(delta_x, delta_y)
-            best_distance = min(best_distance, distance)
+            longitudinal_error, lateral_error = pose_axis_errors(
+                self.amcl_position, target_pose, corridor_yaw)
+            axis_error = abs(longitudinal_error)
+            best_axis_error = min(best_axis_error, axis_error)
 
-            if distance <= position_tolerance:
+            if axis_error <= position_tolerance:
                 self.stop_corridor_drive()
                 print(
                     "[navi] corridor-controlled return reached "
-                    "{} at {:.3f} m".format(
-                        console_text(target_name), distance))
+                    "{} longitudinal axis at {:.3f} m "
+                    "(lateral {:.3f} m ignored)".format(
+                        console_text(target_name),
+                        axis_error,
+                        abs(lateral_error)))
                 return True
 
-            if distance > (
-                    best_distance + HOME_CORRIDOR_PROGRESS_LOSS_LIMIT):
+            if axis_error > (
+                    best_axis_error + HOME_CORRIDOR_PROGRESS_LOSS_LIMIT):
                 rospy.logerr(
-                    "Corridor-controlled return moved away from home: "
-                    "%.3f m (best %.3f m) while targeting %s",
-                    distance,
-                    best_distance,
+                    "Corridor-controlled return moved away from the home "
+                    "longitudinal axis: %.3f m (best %.3f m) while "
+                    "targeting %s",
+                    axis_error,
+                    best_axis_error,
                     console_text(target_name))
                 self.stop_corridor_drive()
                 return False
 
             if time.time() - start_time > timeout:
                 rospy.logerr(
-                    "Corridor-controlled return timed out at %.3f m "
-                    "from %s",
-                    distance,
+                    "Corridor-controlled return timed out at longitudinal "
+                    "error %.3f m from %s",
+                    axis_error,
                     console_text(target_name))
                 self.stop_corridor_drive()
                 return False
@@ -1924,10 +1942,12 @@ class DeliveryNavigator(object):
             now = time.time()
             if now - last_progress_log >= GOAL_PROGRESS_LOG_INTERVAL:
                 print(
-                    "[navi] {} corridor return distance {:.3f} m "
-                    "map heading difference {:.1f} deg (diagnostic only)".format(
+                    "[navi] {} corridor return longitudinal {:.3f} m "
+                    "lateral {:.3f} m ignored, map heading difference "
+                    "{:.1f} deg (diagnostic only)".format(
                         console_text(target_name),
-                        distance,
+                        axis_error,
+                        abs(lateral_error),
                         math.degrees(heading_error)))
                 last_progress_log = now
             rate.sleep()
@@ -2280,7 +2300,7 @@ class DeliveryNavigator(object):
         if not self.drive_corridor_to_home(
                 self.home_pose,
                 HOME_LOCATION_NAME,
-                HOME_NEARBY_STOP_DISTANCE,
+                HOME_LONGITUDINAL_STOP_TOLERANCE,
                 home_return_corridor_yaw):
             if self.cancel_mission:
                 rospy.loginfo("Home return cancelled for a replacement mission")
@@ -2293,21 +2313,23 @@ class DeliveryNavigator(object):
             rospy.logerr(
                 "Cannot verify the robot pose near the initial position")
             return False
-        home_position_error = math.hypot(
-            self.amcl_position[0] - self.home_pose[0],
-            self.amcl_position[1] - self.home_pose[1])
-        if home_position_error > HOME_NEARBY_VERIFY_TOLERANCE:
+        home_longitudinal_error, home_lateral_error = pose_axis_errors(
+            self.amcl_position, self.home_pose, self.home_yaw)
+        if (abs(home_longitudinal_error) >
+                HOME_LONGITUDINAL_VERIFY_TOLERANCE):
             rospy.logerr(
-                "Initial-position proximity verification failed: "
-                "%.3f m from home "
+                "Initial-position longitudinal verification failed: "
+                "%.3f m from the home axis "
                 "(limit %.3f m)",
-                home_position_error,
-                HOME_NEARBY_VERIFY_TOLERANCE)
+                abs(home_longitudinal_error),
+                HOME_LONGITUDINAL_VERIFY_TOLERANCE)
             return False
         rospy.loginfo(
-            "Initial-position proximity verified at %.3f m; "
-            "only heading alignment remains",
-            home_position_error)
+            "Initial-position longitudinal axis verified at %.3f m; "
+            "lateral error %.3f m is intentionally ignored; only heading "
+            "alignment remains",
+            abs(home_longitudinal_error),
+            abs(home_lateral_error))
 
         home_alignment_ok = False
         for _attempt in range(HOME_ALIGNMENT_MAX_ATTEMPTS):
@@ -2352,24 +2374,28 @@ class DeliveryNavigator(object):
         if not self.refresh_localization_from_tf():
             rospy.logerr("Cannot perform final initial-pose verification")
             return False
-        final_home_position_error = math.hypot(
-            self.amcl_position[0] - self.home_pose[0],
-            self.amcl_position[1] - self.home_pose[1])
+        final_home_longitudinal_error, final_home_lateral_error = (
+            pose_axis_errors(
+                self.amcl_position, self.home_pose, self.home_yaw))
         final_home_yaw_error = abs(normalize_angle(
             self.home_yaw - self.amcl_yaw))
-        if (final_home_position_error > HOME_NEARBY_VERIFY_TOLERANCE or
+        if (abs(final_home_longitudinal_error) >
+                HOME_LONGITUDINAL_VERIFY_TOLERANCE or
                 final_home_yaw_error > HOME_YAW_VERIFY_TOLERANCE):
             rospy.logerr(
-                "Final near-home verification failed: %.3f m, %.1f deg",
-                final_home_position_error,
+                "Final near-home verification failed: longitudinal %.3f m, "
+                "lateral %.3f m ignored, yaw %.1f deg",
+                abs(final_home_longitudinal_error),
+                abs(final_home_lateral_error),
                 math.degrees(final_home_yaw_error))
             return False
 
         self.stop_corridor_drive()
         rospy.loginfo(
-            "[RETURNED] 초기 위치 근처 정지 완료: position %.3f m, "
-            "yaw %.1f deg",
-            final_home_position_error,
+            "[RETURNED] 초기 위치 앞뒤축 정지 완료: longitudinal %.3f m, "
+            "lateral %.3f m ignored, yaw %.1f deg",
+            abs(final_home_longitudinal_error),
+            abs(final_home_lateral_error),
             math.degrees(final_home_yaw_error))
         return True
 
