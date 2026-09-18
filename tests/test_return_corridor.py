@@ -107,6 +107,40 @@ class ReturnTests(unittest.TestCase):
                 yaw += w*.1
             self.assertLess(abs(y), .04)
 
+    def test_navigation_heading_is_not_cancelled_by_lateral_error(self):
+        tree = ast.parse(
+            (SCRIPTS/'corridor_centering.py').read_text(encoding='utf-8'))
+        function = next(
+            n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and
+            n.name == 'navigation_steering_correction')
+        env = {}
+        exec(compile(ast.Module(body=[function], type_ignores=[]),
+                     '<navigation-steering>', 'exec'), env)
+        correction, applied_lateral = env[
+            'navigation_steering_correction'](
+                -.060, .057, math.radians(8.7), math.radians(4.0),
+                .015, .060)
+        self.assertAlmostEqual(applied_lateral, -.015)
+        self.assertGreater(correction, .03)
+
+    def test_navigation_uses_full_lateral_trim_when_heading_is_straight(self):
+        tree = ast.parse(
+            (SCRIPTS/'corridor_centering.py').read_text(encoding='utf-8'))
+        function = next(
+            n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and
+            n.name == 'navigation_steering_correction')
+        env = {}
+        exec(compile(ast.Module(body=[function], type_ignores=[]),
+                     '<navigation-steering>', 'exec'), env)
+        correction, applied_lateral = env[
+            'navigation_steering_correction'](
+                -.050, 0., math.radians(1.0), math.radians(4.0),
+                .015, .060)
+        self.assertAlmostEqual(applied_lateral, -.050)
+        self.assertAlmostEqual(correction, -.050)
+
     def return_node(self):
         tree = ast.parse((SCRIPTS/'corridor_centering.py').read_text(encoding='utf-8'))
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))

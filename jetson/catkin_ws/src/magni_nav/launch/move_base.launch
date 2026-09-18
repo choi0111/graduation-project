@@ -52,6 +52,8 @@
     <param name="maximum_correction" value="0.06" />
     <param name="centering_slow_error" value="0.12" />
     <param name="centering_slow_heading_deg" value="4.0" />
+    <param name="heading_priority_threshold_deg" value="4.0" />
+    <param name="heading_priority_lateral_limit" value="0.015" />
     <param name="centering_slow_speed" value="0.06" />
     <param name="distance_filter_alpha" value="0.35" />
     <param name="scan_timeout" value="0.50" />

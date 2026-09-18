@@ -93,6 +93,8 @@ STAGING_LINE_CROSS_TOLERANCE = 0.40
 STAGING_LINE_CROSS_TOLERANCES = {
     u"542호_중앙": 0.65,
     u"542호_대형_중앙": 0.65,
+    u"544호_중앙": 0.65,
+    u"545호_중앙": 0.65,
 }
 STAGING_LINE_MISS_STOP_TOLERANCE = 0.10
 GOAL_PROGRESS_LOG_INTERVAL = 1.0
@@ -143,6 +145,8 @@ ROTATION_CLEARANCE_RADIUS = (
     math.hypot(ROBOT_HALF_WIDTH, ROBOT_REAR_FROM_LIDAR) +
     ROTATION_CLEARANCE_MARGIN)
 ROTATION_CLEARANCE_REQUIRED_POINTS = 5
+ROTATION_CLEARANCE_WAIT_TIMEOUT = 10.0
+ROTATION_CLEARANCE_CLEAR_SAMPLES = 3
 LIDAR_APPROACH_LIMIT_MARGIN = 0.12
 LIDAR_APPROACH_SPEED = 0.05
 LIDAR_APPROACH_SLOW_SPEED = 0.03
@@ -1186,19 +1190,79 @@ class DeliveryNavigator(object):
             return False
         return True
 
+    def wait_for_safe_rotation_clearance(self, context):
+        deadline = time.time() + ROTATION_CLEARANCE_WAIT_TIMEOUT
+        clear_samples = 0
+        last_counted_scan = None
+        waiting_logged = False
+        rate = rospy.Rate(20)
+
+        while not rospy.is_shutdown() and time.time() < deadline:
+            if self.cancel_mission:
+                self.stop_robot()
+                return False
+
+            scan_is_fresh = (
+                self.last_front_scan_wall_time is not None and
+                time.time() - self.last_front_scan_wall_time <=
+                FRONT_SCAN_STALE_TIMEOUT)
+            if scan_is_fresh and self.rotation_clearance_is_safe():
+                if self.last_front_scan_wall_time != last_counted_scan:
+                    clear_samples += 1
+                    last_counted_scan = self.last_front_scan_wall_time
+                if clear_samples >= ROTATION_CLEARANCE_CLEAR_SAMPLES:
+                    if waiting_logged:
+                        rospy.loginfo(
+                            "%s rotation clearance restored at %.3f m; "
+                            "continuing the same mission",
+                            context,
+                            self.rotation_clearance_distance)
+                    return True
+            else:
+                clear_samples = 0
+                last_counted_scan = None
+                if not waiting_logged:
+                    rospy.logwarn(
+                        "%s waiting for rotation clearance: nearest surface "
+                        "%.3f m, required %.3f m",
+                        context,
+                        self.rotation_clearance_distance
+                        if self.rotation_clearance_distance is not None else
+                        -1.0,
+                        ROTATION_CLEARANCE_RADIUS)
+                    waiting_logged = True
+
+            self.stop_robot()
+            rate.sleep()
+
+        rospy.logerr(
+            "%s rotation clearance did not recover within %.1f seconds: "
+            "nearest surface %.3f m, required %.3f m",
+            context,
+            ROTATION_CLEARANCE_WAIT_TIMEOUT,
+            self.rotation_clearance_distance
+            if self.rotation_clearance_distance is not None else -1.0,
+            ROTATION_CLEARANCE_RADIUS)
+        self.stop_robot()
+        return False
+
     def rotate_to_map_yaw(self, target_name, target_yaw, action_text,
                           min_angular_speed=ALIGN_MIN_ANGULAR_SPEED,
                           max_angular_speed=ALIGN_MAX_ANGULAR_SPEED,
                           timeout=ALIGN_TIMEOUT,
-                          preferred_turn_direction=None):
+                          preferred_turn_direction=None,
+                          wait_for_clearance=False):
         if not self.wait_for_fresh_front_scan(FRONT_SCAN_WAIT_TIMEOUT):
             rospy.logerr(
                 "Fresh /scan data is required before direct rotation")
             self.stop_robot()
             return False
-        if (self.rotation_clearance_distance is None or
-                self.rotation_clearance_distance <
-                ROTATION_CLEARANCE_RADIUS):
+        if wait_for_clearance:
+            if not self.wait_for_safe_rotation_clearance(action_text):
+                return False
+        elif (self.rotation_clearance_distance is None or
+              self.rotation_clearance_distance <
+              ROTATION_CLEARANCE_RADIUS):
             rospy.logerr(
                 "Direct rotation refused: nearest surface %.3f m, "
                 "required %.3f m",
@@ -1250,6 +1314,14 @@ class DeliveryNavigator(object):
             if (self.rotation_clearance_distance is None or
                     self.rotation_clearance_distance <
                     ROTATION_CLEARANCE_RADIUS):
+                if wait_for_clearance:
+                    clearance_wait_started = time.time()
+                    if not self.wait_for_safe_rotation_clearance(
+                            "direct rotation"):
+                        return False
+                    start_time += time.time() - clearance_wait_started
+                    last_odom_yaw = self.odom_yaw
+                    continue
                 rospy.logerr(
                     "Direct rotation stopped: nearest surface %.3f m, "
                     "required %.3f m",
@@ -1293,7 +1365,8 @@ class DeliveryNavigator(object):
 
         target_yaw = self.pose_yaw(room_pose)
         return self.rotate_to_map_yaw(
-            room_name, target_yaw, "fine-aligning toward")
+            room_name, target_yaw, "fine-aligning toward",
+            wait_for_clearance=True)
 
     def wait_for_stable_door_center(self, timeout):
         deadline = time.time() + timeout
@@ -1372,7 +1445,8 @@ class DeliveryNavigator(object):
                     "centering on detected door",
                     DOOR_CENTER_MIN_ANGULAR_SPEED,
                     DOOR_CENTER_MAX_ANGULAR_SPEED,
-                    DOOR_CENTER_ALIGN_TIMEOUT):
+                    DOOR_CENTER_ALIGN_TIMEOUT,
+                    wait_for_clearance=True):
                 return False
             rospy.sleep(0.3)
 
@@ -1472,7 +1546,8 @@ class DeliveryNavigator(object):
             "turning toward next destination",
             NEXT_GOAL_MIN_ANGULAR_SPEED,
             NEXT_GOAL_MAX_ANGULAR_SPEED,
-            NEXT_GOAL_ALIGN_TIMEOUT)
+            NEXT_GOAL_ALIGN_TIMEOUT,
+            wait_for_clearance=True)
 
     def preferred_home_turn_direction(self):
         left = self.left_rotation_clearance_distance
@@ -1608,7 +1683,8 @@ class DeliveryNavigator(object):
             "turning in place toward first destination",
             NEXT_GOAL_MIN_ANGULAR_SPEED,
             NEXT_GOAL_MAX_ANGULAR_SPEED,
-            NEXT_GOAL_ALIGN_TIMEOUT)
+            NEXT_GOAL_ALIGN_TIMEOUT,
+            wait_for_clearance=True)
         if success:
             self.reset_corridor_direction_state()
             success = self.drive_straight_distance(
@@ -2359,7 +2435,7 @@ class DeliveryNavigator(object):
             rospy.logwarn(
                 "Failed to cancel move_base goal during mission replacement: %s",
                 exc)
-        self.stop_robot()
+        self.stop_corridor_drive()
 
         old_thread = self.active_thread
         if old_thread and old_thread.is_alive():
@@ -2376,6 +2452,7 @@ class DeliveryNavigator(object):
         # the same SimpleActionClient is reused for the replacement goal.
         rospy.sleep(0.2)
         self.active_thread = None
+        self.reset_corridor_direction_state()
         self.cancel_mission = False
         self.waiting_for_item = False
         rospy.loginfo(

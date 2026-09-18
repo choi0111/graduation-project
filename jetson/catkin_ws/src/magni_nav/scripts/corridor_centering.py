@@ -17,6 +17,22 @@ sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
 from return_corridor import ReturnCorridor
 
 
+def navigation_steering_correction(lateral_correction, heading_correction,
+                                   wall_heading, heading_priority_threshold,
+                                   heading_priority_lateral_limit,
+                                   output_limit):
+    applied_lateral = lateral_correction
+    if (wall_heading is not None and
+            abs(wall_heading) >= heading_priority_threshold):
+        applied_lateral = max(
+            -heading_priority_lateral_limit,
+            min(heading_priority_lateral_limit, applied_lateral))
+    correction = max(
+        -output_limit,
+        min(output_limit, applied_lateral + heading_correction))
+    return correction, applied_lateral
+
+
 class CorridorCentering(object):
     def __init__(self):
         rospy.init_node('corridor_centering')
@@ -81,6 +97,10 @@ class CorridorCentering(object):
             '~centering_slow_error', 0.12)
         self.centering_slow_heading = math.radians(rospy.get_param(
             '~centering_slow_heading_deg', 4.0))
+        self.heading_priority_threshold = math.radians(rospy.get_param(
+            '~heading_priority_threshold_deg', 4.0))
+        self.heading_priority_lateral_limit = rospy.get_param(
+            '~heading_priority_lateral_limit', 0.015)
         self.centering_slow_speed = rospy.get_param(
             '~centering_slow_speed', 0.06)
         self.distance_filter_alpha = rospy.get_param(
@@ -491,14 +511,16 @@ class CorridorCentering(object):
                             right)
                         return
 
+                # A recessed doorway can expose two surfaces while only one
+                # belongs to the continuous corridor wall.  Select the flat
+                # side that unambiguously matches the known half-width.
                 single_side_candidates = []
-                if ((left is None) != (right is None)):
-                    if left is not None and left_flat:
-                        single_side_candidates.append(
-                            ('left', abs(left - target_side_distance)))
-                    if right is not None and right_flat:
-                        single_side_candidates.append(
-                            ('right', abs(right - target_side_distance)))
+                if left is not None and left_flat:
+                    single_side_candidates.append(
+                        ('left', abs(left - target_side_distance)))
+                if right is not None and right_flat:
+                    single_side_candidates.append(
+                        ('right', abs(right - target_side_distance)))
                 single_side_candidates.sort(key=lambda item: item[1])
                 if (single_side_candidates and
                         single_side_candidates[0][1] <=
@@ -515,10 +537,12 @@ class CorridorCentering(object):
                     self.wall_mode = intact_side
                     rospy.loginfo(
                         "corridor_centering reacquired %s wall after reset: "
-                        "distance %.3f target %.3f",
+                        "left %s right %s target %.3f score %.3f",
                         intact_side,
-                        left if intact_side == 'left' else right,
-                        target_side_distance)
+                        "%.3f" % left if left is not None else "open",
+                        "%.3f" % right if right is not None else "open",
+                        target_side_distance,
+                        single_side_candidates[0][1])
                     return
 
             wall_candidates = []
@@ -663,9 +687,12 @@ class CorridorCentering(object):
                 heading_correction = (
                     self.heading_gain * effective_heading)
 
-            correction = self.clamp(
-                lateral_correction + heading_correction,
-                -self.maximum_output_angular_speed,
+            correction, applied_lateral = navigation_steering_correction(
+                lateral_correction,
+                heading_correction,
+                wall_heading,
+                self.heading_priority_threshold,
+                self.heading_priority_lateral_limit,
                 self.maximum_output_angular_speed)
             command.angular.z = self.clamp(
                 correction,
@@ -689,7 +716,8 @@ class CorridorCentering(object):
                 2.0,
                 "corridor_centering active (%s): left %s right %s "
                 "width %s target %.3f error %.3f heading %s "
-                "lateral %.3f angular %.3f output %.3f speed %.3f",
+                "lateral %.3f applied %.3f angular %.3f output %.3f "
+                "speed %.3f",
                 wall_mode,
                 left_text,
                 right_text,
@@ -700,6 +728,7 @@ class CorridorCentering(object):
                 ("%.1fdeg" % math.degrees(wall_heading)
                  if wall_heading is not None else "unknown"),
                 lateral_correction,
+                applied_lateral,
                 heading_correction,
                 correction,
                 command.linear.x)
