@@ -315,14 +315,15 @@ class CorridorCentering(object):
                 if (0 < px < self.robot_front_from_lidar + 0.30 and
                         abs(py) < self.robot_half_width + 0.05):
                     front_blocked = True
-                absolute_angle = abs(angle)
+                side_angle = math.atan2(math.sin(angle), math.cos(angle))
+                absolute_angle = abs(side_angle)
                 if (self.side_min_angle <= absolute_angle <=
                         self.side_max_angle):
                     lateral_distance = (
                         measured_range * abs(math.sin(angle)))
                     if (0.05 <= lateral_distance <=
                             self.side_max_distance):
-                        if angle > 0.0:
+                        if side_angle > 0.0:
                             left_safety_samples.append(lateral_distance)
                         else:
                             right_safety_samples.append(lateral_distance)
@@ -330,7 +331,7 @@ class CorridorCentering(object):
                             self.side_max_distance):
                         point_x = measured_range * math.cos(angle)
                         point_y = measured_range * math.sin(angle)
-                        if angle > 0.0:
+                        if side_angle > 0.0:
                             left_samples.append(lateral_distance)
                             left_wall_points.append((point_x, point_y))
                         else:
@@ -361,6 +362,11 @@ class CorridorCentering(object):
         right_flat = right is not None and right_line is not None
         left_heading = left_line[0] if left_flat else None
         right_heading = right_line[0] if right_flat else None
+        # Compare perpendicular wall distances, not yaw-dependent ray medians.
+        if left_flat:
+            left = abs(left_line[1] * math.cos(left_heading))
+        if right_flat:
+            right = abs(right_line[1] * math.cos(right_heading))
 
         with self.lock:
             self.return_front_clear = front_samples >= self.minimum_samples and not front_blocked
@@ -374,6 +380,9 @@ class CorridorCentering(object):
                 current_width = left + right
             door_recess_geometry = (
                 current_width is not None and
+                abs(current_width - nominal_width) >
+                abs(current_width - (nominal_width +
+                                     self.measured_door_recess_depth)) and
                 abs(current_width -
                     (nominal_width +
                      self.measured_door_recess_depth)) <=
@@ -393,6 +402,8 @@ class CorridorCentering(object):
                 self.corridor_max_width)
             normal_geometry = (
                 corridor_width_in_range and
+                left_flat and right_flat and
+                abs(left_heading - right_heading) <= math.radians(5.0) and
                 not door_recess_geometry and
                 abs(current_width - nominal_width) <=
                 self.corridor_width_tolerance)
@@ -404,7 +415,7 @@ class CorridorCentering(object):
                 # doorway classifier, so do not let that overlap prevent
                 # centering from ever being acquired.
                 acquisition_geometry = normal_corridor_acquisition_candidate(
-                    corridor_width_in_range, left_flat, right_flat)
+                    normal_geometry, left_flat, right_flat)
                 if acquisition_geometry:
                     self.normal_width_samples.append(current_width)
                     if (max(self.normal_width_samples) -
@@ -550,11 +561,11 @@ class CorridorCentering(object):
                     return
 
             wall_candidates = []
-            if left is not None and self.left_distance is not None:
+            if left_flat and self.left_distance is not None:
                 left_change = abs(left - self.left_distance)
                 if left_change <= self.single_wall_match_tolerance:
                     wall_candidates.append(('left', left_change))
-            if right is not None and self.right_distance is not None:
+            if right_flat and self.right_distance is not None:
                 right_change = abs(right - self.right_distance)
                 if right_change <= self.single_wall_match_tolerance:
                     wall_candidates.append(('right', right_change))
