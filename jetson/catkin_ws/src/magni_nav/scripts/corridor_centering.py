@@ -14,7 +14,7 @@ from nav_msgs.msg import Odometry
 from std_msgs.msg import Empty
 # catkin's devel relay executes this source with a different sys.path[0].
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))
-from return_corridor import ReturnCorridor
+from return_corridor import ReturnCorridor, fit_wall
 
 
 def navigation_steering_correction(lateral_correction, heading_correction,
@@ -350,21 +350,17 @@ class CorridorCentering(object):
             left_safety = self.median(left_safety_samples)
         if len(right_safety_samples) >= self.minimum_samples:
             right_safety = self.median(right_safety_samples)
-        left_heading = self.fit_wall_heading(left_wall_points)
-        right_heading = self.fit_wall_heading(right_wall_points)
-
-        left_flat = (
-            left is not None and
-            self.central_spread(left_samples) <=
-            self.wall_flatness_tolerance)
-        right_flat = (
-            right is not None and
-            self.central_spread(right_samples) <=
-            self.wall_flatness_tolerance)
-        if not left_flat:
-            left_heading = None
-        if not right_flat:
-            right_heading = None
+        # A straight wall does not have constant lateral samples when the
+        # robot is yawed relative to the corridor.  Fit the scan points to a
+        # line so a small initial heading error cannot disable acquisition.
+        # Door edges and irregular openings fail the residual check in
+        # fit_wall(), while either intact corridor wall remains usable.
+        left_line = fit_wall(left_wall_points)
+        right_line = fit_wall(right_wall_points)
+        left_flat = left is not None and left_line is not None
+        right_flat = right is not None and right_line is not None
+        left_heading = left_line[0] if left_flat else None
+        right_heading = right_line[0] if right_flat else None
 
         with self.lock:
             self.return_front_clear = front_samples >= self.minimum_samples and not front_blocked

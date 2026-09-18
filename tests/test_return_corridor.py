@@ -227,7 +227,7 @@ class ReturnTests(unittest.TestCase):
         env['rospy'].Rate = lambda _: types.SimpleNamespace(
             sleep=lambda: setattr(robot, 'amcl_position', next(poses)))
         output = []
-        env['cmd_vel_return_pub'] = types.SimpleNamespace(publish=output.append)
+        env['cmd_vel_nav_pub'] = types.SimpleNamespace(publish=output.append)
         self.assertTrue(env['drive_corridor_to_home'](robot, position_tolerance=1.9,
                                                      corridor_yaw=math.pi))
         self.assertEqual(len(output), 2)

@@ -1914,11 +1914,12 @@ class DeliveryNavigator(object):
 
             heading_error = normalize_angle(corridor_yaw - self.amcl_yaw)
 
-            # Map pose decides arrival only. The wall controller owns steering
-            # in odom, including short gaps in the visible corridor walls.
+            # Map pose decides arrival only.  Use the same lidar side-wall
+            # controller as outbound navigation: both walls center the robot,
+            # and at a doorway the intact wall stays 1.18 m from the lidar.
             command = Twist()
             command.linear.x = HOME_CORRIDOR_SPEED
-            cmd_vel_return_pub.publish(command)
+            cmd_vel_nav_pub.publish(command)
 
             now = time.time()
             if now - last_progress_log >= GOAL_PROGRESS_LOG_INTERVAL:
