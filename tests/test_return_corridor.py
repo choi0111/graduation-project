@@ -141,6 +141,24 @@ class ReturnTests(unittest.TestCase):
         self.assertAlmostEqual(applied_lateral, -.050)
         self.assertAlmostEqual(correction, -.050)
 
+    def test_normal_corridor_acquisition_prefers_two_flat_walls(self):
+        tree = ast.parse(
+            (SCRIPTS/'corridor_centering.py').read_text(encoding='utf-8'))
+        function = next(
+            n for n in tree.body
+            if isinstance(n, ast.FunctionDef) and
+            n.name == 'normal_corridor_acquisition_candidate')
+        env = {}
+        exec(compile(ast.Module(body=[function], type_ignores=[]),
+                     '<corridor-acquisition>', 'exec'), env)
+        candidate = env['normal_corridor_acquisition_candidate']
+
+        # 2.445 m overlaps the configured doorway-width band, but two flat
+        # continuous walls still identify the normal corridor reliably.
+        self.assertTrue(candidate(True, True, True))
+        self.assertFalse(candidate(True, True, False))
+        self.assertFalse(candidate(False, True, True))
+
     def return_node(self):
         tree = ast.parse((SCRIPTS/'corridor_centering.py').read_text(encoding='utf-8'))
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef))

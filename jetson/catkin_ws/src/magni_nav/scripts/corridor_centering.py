@@ -33,6 +33,12 @@ def navigation_steering_correction(lateral_correction, heading_correction,
     return correction, applied_lateral
 
 
+def normal_corridor_acquisition_candidate(corridor_width_in_range,
+                                          left_flat, right_flat):
+    """Prefer two continuous walls when first acquiring the corridor."""
+    return corridor_width_in_range and left_flat and right_flat
+
+
 class CorridorCentering(object):
     def __init__(self):
         rospy.init_node('corridor_centering')
@@ -396,11 +402,13 @@ class CorridorCentering(object):
                 self.corridor_width_tolerance)
 
             if not self.normal_corridor_seen:
-                acquisition_geometry = (
-                    corridor_width_in_range and
-                    left_flat and
-                    right_flat and
-                    not door_recess_geometry)
+                # The measured normal width can overlap the doorway-width
+                # tolerance by a few centimetres.  At startup, two flat walls
+                # are stronger evidence of the corridor than the width-only
+                # doorway classifier, so do not let that overlap prevent
+                # centering from ever being acquired.
+                acquisition_geometry = normal_corridor_acquisition_candidate(
+                    corridor_width_in_range, left_flat, right_flat)
                 if acquisition_geometry:
                     self.normal_width_samples.append(current_width)
                     if (max(self.normal_width_samples) -
