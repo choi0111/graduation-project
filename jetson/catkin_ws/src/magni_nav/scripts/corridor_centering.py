@@ -22,11 +22,10 @@ def navigation_steering_correction(lateral_correction, heading_correction,
                                    heading_priority_lateral_limit,
                                    output_limit):
     applied_lateral = lateral_correction
-    if (wall_heading is not None and
-            abs(wall_heading) >= heading_priority_threshold):
-        applied_lateral = max(
-            -heading_priority_lateral_limit,
-            min(heading_priority_lateral_limit, applied_lateral))
+    # Keep the lateral term continuous across the heading threshold. The old
+    # step from 0.060 to 0.015 reversed steering while still far off-center.
+    # Heading feedback still counteracts the turn as the robot aligns.
+    applied_lateral = max(-output_limit, min(output_limit, applied_lateral))
     correction = max(
         -output_limit,
         min(output_limit, applied_lateral + heading_correction))

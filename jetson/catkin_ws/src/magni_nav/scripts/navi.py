@@ -1482,48 +1482,16 @@ class DeliveryNavigator(object):
         if self.rotation_clearance_is_safe():
             return True
 
-        rospy.logwarn(
+        rospy.logerr(
             "%s rotation clearance is %.3f m (required %.3f m); "
-            "re-centering at %s",
+            "stopping at %s without sending a recenter driving goal",
             console_text(room_name),
             self.rotation_clearance_distance
             if self.rotation_clearance_distance is not None else -1.0,
             ROTATION_CLEARANCE_RADIUS,
             console_text(center_target))
-        if not self.set_xy_goal_tolerance(CENTER_RECENTER_TOLERANCE):
-            return False
-
-        recenter_name = u"{}_recenter".format(center_target)
-        if not self.move_to_goal(
-                recenter_name,
-                center_pose,
-                CENTER_RECENTER_TOLERANCE):
-            rospy.logerr(
-                "Failed to re-center %s before room-facing rotation",
-                console_text(room_name))
-            return False
-
         self.stop_robot()
-        rospy.sleep(0.5)
-        if not self.wait_for_fresh_front_scan(FRONT_SCAN_WAIT_TIMEOUT):
-            rospy.logerr(
-                "Fresh /scan data is required after re-centering %s",
-                console_text(room_name))
-            return False
-        if not self.rotation_clearance_is_safe():
-            rospy.logerr(
-                "%s rotation remains unsafe after re-centering: "
-                "%.3f m available, %.3f m required",
-                console_text(room_name),
-                self.rotation_clearance_distance
-                if self.rotation_clearance_distance is not None else -1.0,
-                ROTATION_CLEARANCE_RADIUS)
-            self.stop_robot()
-            return False
-
-        print("[navi] {} rotation clearance restored at {:.3f} m".format(
-            console_text(room_name), self.rotation_clearance_distance))
-        return True
+        return False
 
     def navigation_target_for(self, room_name):
         center_target = room_name + u"_중앙"

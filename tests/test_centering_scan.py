@@ -51,6 +51,47 @@ def scan(y=.2, yaw=0., upper=1.22, lower=-1.22, zero_start=False):
 
 
 class ScanTests(unittest.TestCase):
+    def test_closed_loop_converges_from_either_side_in_both_directions(self):
+        for direction in (0., math.pi):
+            for initial_y in (-.35, .35):
+                n = node()
+                y, yaw = initial_y, direction
+                cmd = twist()
+                cmd.linear.x = .1
+                for _ in range(10):
+                    n.scan_callback(scan(y=y, yaw=yaw, upper=1.18, lower=-1.18))
+                self.assertTrue(n.normal_corridor_seen)
+                for _ in range(1000):
+                    n.scan_callback(scan(y=y, yaw=yaw, upper=1.18, lower=-1.18))
+                    n.cmd_callback(cmd)
+                    result = n.output[-1]
+                    yaw += result.angular.z * .1
+                    y += result.linear.x * math.sin(yaw) * .1
+                    self.assertLess(abs(y), .40)
+                self.assertLess(abs(y), .06)
+
+    def test_unsafe_room_rotation_does_not_restart_driving(self):
+        tree = ast.parse((SCRIPTS / 'navi.py').read_text(encoding='utf-8'))
+        method = next(n for n in ast.walk(tree)
+                      if isinstance(n, ast.FunctionDef) and
+                      n.name == 'ensure_room_rotation_clearance')
+        env = dict(rospy=types.SimpleNamespace(logerr=lambda *a: None),
+                   FRONT_SCAN_WAIT_TIMEOUT=1., ROTATION_CLEARANCE_RADIUS=.677,
+                   console_text=str)
+        exec(compile(ast.Module(body=[method], type_ignores=[]), '<clearance>', 'exec'), env)
+        stopped = []
+        robot = types.SimpleNamespace(
+            wait_for_fresh_front_scan=lambda timeout: True,
+            rotation_clearance_is_safe=lambda: False,
+            rotation_clearance_distance=.660,
+            stop_robot=lambda: stopped.append(True))
+        self.assertFalse(env['ensure_room_rotation_clearance'](
+            robot, '545ho', '545ho_center', None))
+        self.assertEqual(stopped, [True])
+        robot.rotation_clearance_is_safe = lambda: True
+        self.assertTrue(env['ensure_room_rotation_clearance'](
+            robot, '545ho', '545ho_center', None))
+
     def test_acquired_normal_corridor_stays_active_and_steers_away_from_left(self):
         for zero_start in (False, True):
             n = node()

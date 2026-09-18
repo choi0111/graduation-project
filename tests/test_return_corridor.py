@@ -107,7 +107,7 @@ class ReturnTests(unittest.TestCase):
                 yaw += w*.1
             self.assertLess(abs(y), .04)
 
-    def test_navigation_heading_is_not_cancelled_by_lateral_error(self):
+    def test_navigation_lateral_trim_does_not_switch_at_heading_threshold(self):
         tree = ast.parse(
             (SCRIPTS/'corridor_centering.py').read_text(encoding='utf-8'))
         function = next(
@@ -121,8 +121,15 @@ class ReturnTests(unittest.TestCase):
             'navigation_steering_correction'](
                 -.060, .057, math.radians(8.7), math.radians(4.0),
                 .015, .060)
-        self.assertAlmostEqual(applied_lateral, -.015)
-        self.assertGreater(correction, .03)
+        self.assertAlmostEqual(applied_lateral, -.060)
+        self.assertAlmostEqual(correction, -.003)
+        steer = env['navigation_steering_correction']
+        for sign in (-1, 1):
+            values = [steer(sign * .060, -sign * .023,
+                            math.radians(angle), math.radians(4),
+                            .015, .060)[0] for angle in (3.99, 4.01)]
+            self.assertAlmostEqual(values[0], values[1])
+            self.assertGreater(sign * values[1], 0.)
 
     def test_navigation_uses_full_lateral_trim_when_heading_is_straight(self):
         tree = ast.parse(
