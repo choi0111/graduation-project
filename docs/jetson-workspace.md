@@ -34,9 +34,9 @@ networking before using RViz from a separate MSI laptop.
 position:
 
 ```text
-x:   -15.5441206585 m
-y:     8.32480237477 m
-yaw:  -0.6435763485 rad
+x:   -14.970 m
+y:     8.264 m
+yaw:  -0.727 rad
 ```
 
 Place the robot on the marked floor position with the same forward direction

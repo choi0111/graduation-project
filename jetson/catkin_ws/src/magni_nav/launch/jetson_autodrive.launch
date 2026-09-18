@@ -27,9 +27,9 @@
     <param name="base_frame_id" value="base_footprint" />
     <param name="odom_frame_id" value="odom" />
     <param name="global_frame_id" value="map" />
-    <param name="initial_pose_x" value="-15.5441206585" />
-    <param name="initial_pose_y" value="8.32480237477" />
-    <param name="initial_pose_a" value="-0.6435763485" />
+    <param name="initial_pose_x" value="-14.970" />
+    <param name="initial_pose_y" value="8.264" />
+    <param name="initial_pose_a" value="-0.727" />
     <param name="initial_cov_xx" value="0.20" />
     <param name="initial_cov_yy" value="0.20" />
     <param name="initial_cov_aa" value="0.06" />

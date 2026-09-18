@@ -338,11 +338,11 @@ class DeliveryNavigator(object):
         self.current_target = ""
         self.shutdown_started = False
         home_x = rospy.get_param(
-            '/amcl/initial_pose_x', -15.5441206585)
+            '/amcl/initial_pose_x', -14.970)
         home_y = rospy.get_param(
-            '/amcl/initial_pose_y', 8.32480237477)
+            '/amcl/initial_pose_y', 8.264)
         home_yaw = rospy.get_param(
-            '/amcl/initial_pose_a', -0.6435763485)
+            '/amcl/initial_pose_a', -0.727)
         self.home_pose = (
             home_x,
             home_y,
