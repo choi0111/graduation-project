@@ -153,6 +153,7 @@ LIDAR_APPROACH_SLOW_SPEED = 0.03
 LIDAR_APPROACH_SLOW_MARGIN = 0.20
 LIDAR_APPROACH_TIMEOUT = 35.0
 NEXT_GOAL_BACKUP_DISTANCE = 0.50
+NEXT_GOAL_BACKUP_RESERVE = 0.15
 NEXT_GOAL_BACKUP_SPEED = 0.05
 NEXT_GOAL_BACKUP_TIMEOUT = 18.0
 ODOM_WAIT_TIMEOUT = 3.0
@@ -2083,7 +2084,15 @@ class DeliveryNavigator(object):
                 NEXT_GOAL_BACKUP_DISTANCE)
             backup_distance = NEXT_GOAL_BACKUP_DISTANCE
         else:
-            backup_distance = recorded_distance
+            backup_distance = max(
+                0.0,
+                recorded_distance - NEXT_GOAL_BACKUP_RESERVE)
+            print(
+                "[navi] door approach was {:.2f} m; keeping {:.2f} m "
+                "forward reserve and backing {:.2f} m".format(
+                    recorded_distance,
+                    NEXT_GOAL_BACKUP_RESERVE,
+                    backup_distance))
 
         if backup_distance <= 0.01:
             print(
